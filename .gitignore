@@ -25,5 +25,4 @@ env/
 /slack_accounts.json
 /future.md
 /tests/slack_send_test.py
-/env.template
 

@@ -1,0 +1,29 @@
+# Environments / secrets
+.env
+*.env
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Logs / cache
+*.log
+*.cache
+
+# Misc
+/dump/
+/slack_accounts.json
+/future.md
+/tests/slack_send_test.py
+/env.template
+

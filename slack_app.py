@@ -9,20 +9,20 @@ import time
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
-
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
-
 from composio import Composio
 from composio_langchain import LangchainProvider
-
 from DeepAgent import run_agent
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("slack_app")
+logger.setLevel(logging.INFO)
+logger.propagate = True
+logger.info("Slack app module loaded")
 
 SLACK_BOT_USER_ID = os.getenv("SLACK_BOT_USER_ID")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")

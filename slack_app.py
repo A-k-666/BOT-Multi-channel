@@ -20,6 +20,9 @@ from DeepAgent import run_agent
 
 load_dotenv()
 
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("slack_app")
+
 SLACK_BOT_USER_ID = os.getenv("SLACK_BOT_USER_ID")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_ACCOUNTS_PATH = Path("slack_accounts.json")
@@ -108,9 +111,11 @@ def is_bot_mention(event: dict[str, Any]) -> bool:
 @app.post("/slack/events")
 async def slack_events(request: Request):
     raw_body = await request.body()
+    logger.info("Incoming headers: %s", dict(request.headers))
     verify_slack_signature(request, raw_body)
 
     payload = await request.json()
+    logger.info("Received payload: %s", payload)
 
     if payload.get("type") == "url_verification":
         return JSONResponse({"challenge": payload.get("challenge")})
@@ -120,9 +125,11 @@ async def slack_events(request: Request):
         return JSONResponse({"ok": True})
 
     if event.get("bot_id"):
+        logger.info("Ignoring bot event: %s", event)
         return JSONResponse({"ok": True})
 
     if not is_bot_mention(event):
+        logger.info("Event is not a mention: %s", event)
         return JSONResponse({"ok": True})
 
     team_id = payload.get("team_id")
@@ -131,19 +138,23 @@ async def slack_events(request: Request):
     user_text = event.get("text", "").strip()
 
     if not team_id or not channel:
+        logger.warning("Missing team_id/channel in event: %s", event)
         return JSONResponse({"ok": True})
 
     try:
         org_id, connected_account_id = resolve_workspace(team_id)
     except HTTPException as exc:
+        logger.error("Team lookup failed for %s: %s", team_id, exc.detail)
         return JSONResponse({"ok": False, "error": exc.detail})
 
     try:
         cleaned_text = user_text
         if SLACK_BOT_USER_ID:
             cleaned_text = cleaned_text.replace(f"<@{SLACK_BOT_USER_ID}>", "").strip()
+        logger.info("Dispatching to DeepAgent with text: %s", cleaned_text)
         reply = run_agent(cleaned_text or user_text)
     except Exception as agent_error:  # pragma: no cover
+        logger.exception("DeepAgent invocation failed: %s", agent_error)
         reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
     response = send_slack_message(
@@ -153,6 +164,7 @@ async def slack_events(request: Request):
         text=reply,
         thread_ts=thread_ts,
     )
+    logger.info("Sent response via Composio: %s", response)
 
     return JSONResponse({"ok": True, "composio": response})
 

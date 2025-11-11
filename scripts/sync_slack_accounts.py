@@ -54,10 +54,18 @@ def pick_latest_account(accounts):
     mapping: dict[str, dict[str, str]] = {}
     for team_id, accs in buckets.items():
         latest = max(accs, key=lambda a: getattr(a, "updated_at", ""))  # pick most recent
+        bot_user_id = ""
+        state = getattr(latest, "state", None)
+        val = getattr(state, "val", None) if state else None
+        if isinstance(val, dict):
+            bot_user_id = val.get("bot_user_id", "") or ""
+        elif val is not None:
+            bot_user_id = getattr(val, "bot_user_id", "") or ""
         mapping[team_id] = {
             "org_id": getattr(latest, "user_id", ""),
             "connected_account_id": latest.id,
             "auth_config_id": latest.auth_config.id if latest.auth_config else "",
+            "bot_user_id": bot_user_id,
         }
     return mapping
 

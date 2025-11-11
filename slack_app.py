@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hmac
 import json
+from collections import deque
 import logging
 import os
 import time
@@ -24,8 +25,22 @@ logger.setLevel(logging.INFO)
 logger.propagate = True
 logger.info("Slack app module loaded")
 
-SLACK_BOT_USER_ID = os.getenv("SLACK_BOT_USER_ID")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
+SLACK_BOT_FALLBACK = os.getenv("SLACK_BOT_USER_ID", "")
+
+_processed_event_ids: deque[str] = deque()
+_processed_event_index: set[str] = set()
+
+
+def _is_duplicate(event_id: str) -> bool:
+    if event_id in _processed_event_index:
+        return True
+    _processed_event_ids.append(event_id)
+    _processed_event_index.add(event_id)
+    while len(_processed_event_ids) > 500:
+        old = _processed_event_ids.popleft()
+        _processed_event_index.discard(old)
+    return False
 SLACK_ACCOUNTS_PATH = Path("slack_accounts.json")
 DEFAULT_RESPONSE_TEXT = os.getenv(
     "SLACK_DEFAULT_RESPONSE",
@@ -93,19 +108,21 @@ def send_slack_message(
     )
 
 
-def resolve_workspace(team_id: str) -> tuple[str, str]:
+def resolve_workspace(team_id: str) -> tuple[str, str, str]:
     if team_id not in slack_account_map:
         raise HTTPException(status_code=400, detail=f"Unknown team_id {team_id}")
     entry = slack_account_map[team_id]
-    return entry["org_id"], entry["connected_account_id"]
+    bot_user_id = entry.get("bot_user_id") or SLACK_BOT_FALLBACK
+    return entry["org_id"], entry["connected_account_id"], bot_user_id
 
 
-def is_bot_mention(event: dict[str, Any]) -> bool:
-    if event.get("type") == "app_mention":
+def is_bot_mention(event: dict[str, Any], bot_user_id: str) -> bool:
+    event_type = event.get("type")
+    if event_type == "app_mention":
         return True
-    text = event.get("text", "")
-    if SLACK_BOT_USER_ID and f"<@{SLACK_BOT_USER_ID}>" in text:
-        return True
+    if event_type == "message":
+        text = event.get("text", "")
+        return bool(bot_user_id and f"<@{bot_user_id}>" in text)
     return False
 
 
@@ -128,20 +145,21 @@ async def slack_events(request: Request):
     if not event:
         return JSONResponse({"ok": True})
 
+    event_id = payload.get("event_id") or event.get("client_msg_id")
+    if event_id and _is_duplicate(event_id):
+        logger.info("Duplicate event %s detected; ignoring", event_id)
+        return JSONResponse({"ok": True})
+
+    team_id = payload.get("team_id") or event.get("team")
+    channel = event.get("channel")
+    thread_ts = event.get("thread_ts")
+    user_text = event.get("text", "").strip()
+    user_id = event.get("user")
+
     if event.get("bot_id"):
         logger.info("Ignoring bot event: %s", event)
         print("Ignoring bot event:", event)
         return JSONResponse({"ok": True})
-
-    if not is_bot_mention(event):
-        logger.info("Event is not a mention: %s", event)
-        print("Not a mention:", event)
-        return JSONResponse({"ok": True})
-
-    team_id = payload.get("team_id")
-    channel = event.get("channel")
-    thread_ts = event.get("thread_ts")
-    user_text = event.get("text", "").strip()
 
     if not team_id or not channel:
         logger.warning("Missing team_id/channel in event: %s", event)
@@ -149,16 +167,25 @@ async def slack_events(request: Request):
         return JSONResponse({"ok": True})
 
     try:
-        org_id, connected_account_id = resolve_workspace(team_id)
+        org_id, connected_account_id, bot_user_id = resolve_workspace(team_id)
     except HTTPException as exc:
         logger.error("Team lookup failed for %s: %s", team_id, exc.detail)
         print("Lookup failed:", team_id, exc.detail)
         return JSONResponse({"ok": False, "error": exc.detail})
 
+    if bot_user_id and user_id == bot_user_id:
+        logger.info("Ignoring self message for bot %s", bot_user_id)
+        return JSONResponse({"ok": True})
+
+    if not is_bot_mention(event, bot_user_id):
+        logger.info("Event is not a mention: %s", event)
+        print("Not a mention:", event)
+        return JSONResponse({"ok": True})
+
     try:
         cleaned_text = user_text
-        if SLACK_BOT_USER_ID:
-            cleaned_text = cleaned_text.replace(f"<@{SLACK_BOT_USER_ID}>", "").strip()
+        if bot_user_id:
+            cleaned_text = cleaned_text.replace(f"<@{bot_user_id}>", "").strip()
         logger.info("Dispatching to DeepAgent with text: %s", cleaned_text)
         print("Dispatching text:", cleaned_text)
         reply = run_agent(cleaned_text or user_text)

@@ -1,0 +1,8 @@
+python-dotenv
+deepagents
+langchain-openai
+tavily
+composio
+composio-langchain
+discord.py
+

@@ -32,8 +32,8 @@ def resolve_user_ids(args: argparse.Namespace) -> list[str] | None:
     raw = args.user_ids or os.getenv("SLACK_COMPOSIO_USER_IDS")
     if raw:
         return [uid.strip() for uid in raw.split(",") if uid.strip()]
-    default_uid = os.getenv("COMPOSIO_USER_ID")
-    return [default_uid] if default_uid else None
+    # If no user_ids specified, return None to fetch ALL Slackbot accounts
+    return None
 
 
 def pick_latest_account(accounts):
@@ -77,16 +77,30 @@ def main() -> None:
     client = Composio(provider=LangchainProvider())
     user_ids = resolve_user_ids(args)
 
-    accounts = client.connected_accounts.list(
-        toolkit_slugs=["SLACKBOT"],
-        user_ids=user_ids,
-    )
+    # Fetch all Slackbot accounts (filter by user_ids only if provided)
+    list_kwargs = {"toolkit_slugs": ["SLACKBOT"]}
+    if user_ids:
+        list_kwargs["user_ids"] = user_ids
+    
+    accounts = client.connected_accounts.list(**list_kwargs)
 
     mapping = pick_latest_account(accounts)
 
+    # Merge with existing JSON to preserve any manually added entries
     target = Path(args.output)
-    target.write_text(json.dumps(mapping, indent=2), encoding="utf-8")
-    print(f"Updated {target} with {len(mapping)} entries.")
+    existing = {}
+    if target.exists():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, Exception):
+            pass
+    
+    # Update existing with new mappings (new entries will be added, existing will be updated)
+    existing.update(mapping)
+    
+    # Write back the merged data
+    target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+    print(f"Updated {target} with {len(mapping)} entries (total: {len(existing)} entries).")
 
 
 if __name__ == "__main__":

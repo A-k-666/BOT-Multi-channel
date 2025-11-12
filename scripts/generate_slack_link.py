@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument("--org-id", default=None, help="Org/workspace ID to use as user_id.")
     parser.add_argument(
         "--auth-config-id",
-        default="ac_Bzmda-wXX2YF",
+        default="ac_msv1mYqeuAoG",
         help="Slack auth config ID (default set to existing config).",
     )
     args = parser.parse_args()

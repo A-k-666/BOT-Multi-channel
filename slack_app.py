@@ -132,14 +132,26 @@ async def slack_events(request: Request):
     headers = dict(request.headers)
     logger.info("Incoming headers: %s", headers)
     print("Incoming headers:", headers)
-    verify_slack_signature(request, raw_body)
-
-    payload = await request.json()
+    
+    # Parse JSON from raw_body (don't read body twice)
+    try:
+        payload = json.loads(raw_body.decode('utf-8'))
+    except json.JSONDecodeError as e:
+        logger.error("Failed to parse JSON: %s", e)
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+    
     logger.info("Received payload: %s", payload)
     print("Received payload:", payload)
 
+    # Handle URL verification BEFORE signature verification
+    # Slack's URL verification doesn't require signature verification
     if payload.get("type") == "url_verification":
-        return JSONResponse({"challenge": payload.get("challenge")})
+        challenge = payload.get("challenge")
+        logger.info("URL verification challenge received: %s", challenge)
+        return JSONResponse({"challenge": challenge})
+    
+    # For all other requests, verify signature
+    verify_slack_signature(request, raw_body)
 
     event = payload.get("event", {})
     if not event:

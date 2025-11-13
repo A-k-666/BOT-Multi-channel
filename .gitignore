@@ -23,8 +23,10 @@ env/
 # Misc
 /dump/
 /slack_accounts.json
+/facebook_accounts.json
 /future.md
 /tests/slack_send_test.py
 /commands.txt
 /reBot.txt
+/timepass.py
 

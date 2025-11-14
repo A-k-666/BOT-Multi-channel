@@ -14,6 +14,7 @@ from typing import Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from composio import Composio
 from composio_langchain import LangchainProvider
 from DeepAgent import run_agent
@@ -30,10 +31,10 @@ logger.info("Slack app module loaded")
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_FALLBACK = os.getenv("SLACK_BOT_USER_ID", "")
-SLACK_AUTH_CONFIG_ID = os.getenv("SLACK_AUTH_CONFIG_ID", "ac_msv1mYqeuAoG")
+SLACK_AUTH_CONFIG_ID = os.getenv("SLACK_AUTH_CONFIG_ID", "")
 
 # Sync interval in seconds (default: 5 minutes, can be overridden via env)
-SYNC_INTERVAL = int(os.getenv("SLACK_SYNC_INTERVAL_SECONDS", "300"))
+SYNC_INTERVAL = int(os.getenv("SLACK_SYNC_INTERVAL_SECONDS", "60"))
 
 _processed_event_ids: deque[str] = deque()
 _processed_event_index: set[str] = set()
@@ -164,6 +165,15 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add CORS middleware for frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins (restrict in production)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allow all methods
+    allow_headers=["*"],  # Allow all headers
+)
+
 
 def verify_slack_signature(request: Request, raw_body: bytes) -> None:
     if not SLACK_SIGNING_SECRET:
@@ -259,6 +269,21 @@ def generate_slack_oauth_link(org_id: str | None = None, auth_config_id: str | N
         raise HTTPException(status_code=500, detail=f"Failed to generate OAuth link: {str(e)}")
 
 
+@app.options("/slack/generate-link")
+async def options_slack_oauth_link():
+    """Handle CORS preflight requests."""
+    return JSONResponse(
+        content={},
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+
 @app.get("/slack/generate-link")
 async def get_slack_oauth_link(
     org_id: str | None = Query(None, description="Optional: Custom org/workspace ID"),
@@ -275,14 +300,38 @@ async def get_slack_oauth_link(
         GET /slack/generate-link?org_id=org_custom123
     """
     try:
+        logger.info(f"Received request to generate Slack OAuth link (org_id: {org_id})")
         result = generate_slack_oauth_link(org_id=org_id, auth_config_id=auth_config_id)
-        logger.info(f"Generated Slack OAuth link for org_id: {result['org_id']}")
-        return JSONResponse(result)
-    except HTTPException:
+        logger.info(f"Successfully generated Slack OAuth link for org_id: {result['org_id']}")
+        return JSONResponse(
+            content=result,
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
+    except HTTPException as e:
+        logger.error(f"HTTPException in generate-link: {e.detail}")
         raise
     except Exception as e:
         logger.error(f"Error generating Slack OAuth link: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        return JSONResponse(
+            content={
+                "success": False,
+                "error": str(e),
+                "message": "Failed to generate OAuth link"
+            },
+            status_code=500,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+            }
+        )
 
 
 @app.post("/slack/events")

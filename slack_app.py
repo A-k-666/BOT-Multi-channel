@@ -3,6 +3,7 @@
 from __future__ import annotations
 import hmac
 import json
+import uuid
 from collections import deque
 import logging
 import os
@@ -11,7 +12,7 @@ from contextlib import asynccontextmanager
 from hashlib import sha256
 from typing import Any
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
 from composio import Composio
 from composio_langchain import LangchainProvider
@@ -29,6 +30,7 @@ logger.info("Slack app module loaded")
 
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_FALLBACK = os.getenv("SLACK_BOT_USER_ID", "")
+SLACK_AUTH_CONFIG_ID = os.getenv("SLACK_AUTH_CONFIG_ID", "ac_msv1mYqeuAoG")
 
 # Sync interval in seconds (default: 5 minutes, can be overridden via env)
 SYNC_INTERVAL = int(os.getenv("SLACK_SYNC_INTERVAL_SECONDS", "300"))
@@ -227,6 +229,60 @@ def is_bot_mention(event: dict[str, Any], bot_user_id: str) -> bool:
         text = event.get("text", "")
         return bool(bot_user_id and f"<@{bot_user_id}>" in text)
     return False
+
+
+def generate_slack_oauth_link(org_id: str | None = None, auth_config_id: str | None = None) -> dict[str, Any]:
+    """
+    Generate Slack OAuth link using Composio.
+    Returns link and org_id for the workspace.
+    """
+    try:
+        if not org_id:
+            org_id = f"org_{uuid.uuid4().hex[:8]}"
+        
+        config_id = auth_config_id or SLACK_AUTH_CONFIG_ID
+        
+        client = Composio(provider=LangchainProvider())
+        connection = client.connected_accounts.link(
+            user_id=org_id,
+            auth_config_id=config_id,
+        )
+        
+        return {
+            "success": True,
+            "oauth_url": connection.redirect_url,
+            "org_id": org_id,
+            "auth_config_id": config_id,
+        }
+    except Exception as e:
+        logger.error(f"Failed to generate Slack OAuth link: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to generate OAuth link: {str(e)}")
+
+
+@app.get("/slack/generate-link")
+async def get_slack_oauth_link(
+    org_id: str | None = Query(None, description="Optional: Custom org/workspace ID"),
+    auth_config_id: str | None = Query(None, description="Optional: Custom auth config ID"),
+):
+    """
+    API endpoint to generate Slack OAuth installation link.
+    
+    When UI button is clicked, call this API to get the OAuth link.
+    Returns JSON with oauth_url, org_id, and auth_config_id.
+    
+    Example:
+        GET /slack/generate-link
+        GET /slack/generate-link?org_id=org_custom123
+    """
+    try:
+        result = generate_slack_oauth_link(org_id=org_id, auth_config_id=auth_config_id)
+        logger.info(f"Generated Slack OAuth link for org_id: {result['org_id']}")
+        return JSONResponse(result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating Slack OAuth link: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
 
 @app.post("/slack/events")

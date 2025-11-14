@@ -24,9 +24,16 @@ env/
 /dump/
 /slack_accounts.json
 /facebook_accounts.json
+/instagram_accounts.json
 /future.md
 /tests/slack_send_test.py
 /commands.txt
 /reBot.txt
 /timepass.py
+
+# Documentation / Config (don't push)
+*.md
+env.template
+.env
+.env.*
 

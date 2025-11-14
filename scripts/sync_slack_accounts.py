@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -9,10 +10,14 @@ from dotenv import load_dotenv
 from composio import Composio
 from composio_langchain import LangchainProvider
 
+# Add parent directory to path to import supabase_helpers
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from supabase_helpers import bulk_upsert_slack_accounts
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sync active Slackbot connected accounts into slack_accounts.json"
+        description="Sync active Slackbot connected accounts to Supabase"
     )
     parser.add_argument(
         "--user-ids",
@@ -22,8 +27,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output",
-        default="slack_accounts.json",
-        help="Path of the JSON mapping file (default: slack_accounts.json).",
+        default=None,
+        help="Optional: Also write to JSON file (for backup/compatibility).",
+    )
+    parser.add_argument(
+        "--supabase-only",
+        action="store_true",
+        help="Only sync to Supabase, don't write JSON file.",
     )
     return parser.parse_args()
 
@@ -86,21 +96,32 @@ def main() -> None:
 
     mapping = pick_latest_account(accounts)
 
-    # Merge with existing JSON to preserve any manually added entries
-    target = Path(args.output)
-    existing = {}
-    if target.exists():
-        try:
-            existing = json.loads(target.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, Exception):
-            pass
-    
-    # Update existing with new mappings (new entries will be added, existing will be updated)
-    existing.update(mapping)
-    
-    # Write back the merged data
-    target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    print(f"Updated {target} with {len(mapping)} entries (total: {len(existing)} entries).")
+    if not mapping:
+        print("No active Slack accounts found to sync.")
+        return
+
+    # Sync to Supabase
+    try:
+        count = bulk_upsert_slack_accounts(mapping)
+        print(f"✅ Synced {count} Slack accounts to Supabase")
+    except Exception as e:
+        print(f"❌ Failed to sync to Supabase: {e}")
+        sys.exit(1)
+
+    # Optionally write to JSON file as backup
+    if args.output and not args.supabase_only:
+        target = Path(args.output)
+        # Merge with existing JSON if it exists
+        existing = {}
+        if target.exists():
+            try:
+                existing = json.loads(target.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, Exception):
+                pass
+        
+        existing.update(mapping)
+        target.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        print(f"✅ Also updated {target} with {len(mapping)} entries (total: {len(existing)} entries).")
 
 
 if __name__ == "__main__":

@@ -7,4 +7,5 @@ composio-langchain
 discord.py
 fastapi
 uvicorn
+supabase
 

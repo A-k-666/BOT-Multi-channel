@@ -7,8 +7,8 @@ from collections import deque
 import logging
 import os
 import time
+from contextlib import asynccontextmanager
 from hashlib import sha256
-from pathlib import Path
 from typing import Any
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -16,6 +16,8 @@ from fastapi.responses import JSONResponse
 from composio import Composio
 from composio_langchain import LangchainProvider
 from DeepAgent import run_agent
+from supabase_helpers import load_slack_mapping_from_supabase, bulk_upsert_slack_accounts
+from scripts.sync_slack_accounts import pick_latest_account
 
 load_dotenv()
 
@@ -28,8 +30,16 @@ logger.info("Slack app module loaded")
 SLACK_SIGNING_SECRET = os.getenv("SLACK_SIGNING_SECRET", "")
 SLACK_BOT_FALLBACK = os.getenv("SLACK_BOT_USER_ID", "")
 
+# Sync interval in seconds (default: 5 minutes, can be overridden via env)
+SYNC_INTERVAL = int(os.getenv("SLACK_SYNC_INTERVAL_SECONDS", "300"))
+
 _processed_event_ids: deque[str] = deque()
 _processed_event_index: set[str] = set()
+
+# Cache for Slack account mappings (refreshed periodically)
+_slack_account_map_cache: dict[str, Any] = {}
+_cache_last_updated: float = 0
+_cache_ttl: int = 60  # Cache TTL in seconds
 
 
 def _is_duplicate(event_id: str) -> bool:
@@ -41,25 +51,116 @@ def _is_duplicate(event_id: str) -> bool:
         old = _processed_event_ids.popleft()
         _processed_event_index.discard(old)
     return False
-SLACK_ACCOUNTS_PATH = Path("slack_accounts.json")
+
 DEFAULT_RESPONSE_TEXT = os.getenv(
     "SLACK_DEFAULT_RESPONSE",
     "Hi! I'm still connecting. Please try again later.",
 )
 
 
-def load_slack_mapping() -> dict[str, Any]:
-    if not SLACK_ACCOUNTS_PATH.exists():
-        raise RuntimeError("slack_accounts.json not found.")
-    with SLACK_ACCOUNTS_PATH.open("r", encoding="utf-8") as fh:
-        return json.load(fh)
+def get_slack_account_map() -> dict[str, Any]:
+    """
+    Get Slack account mapping from cache or Supabase.
+    Uses caching to avoid frequent database calls.
+    """
+    global _slack_account_map_cache, _cache_last_updated
+    
+    current_time = time.time()
+    
+    # Refresh cache if expired
+    if current_time - _cache_last_updated > _cache_ttl:
+        try:
+            _slack_account_map_cache = load_slack_mapping_from_supabase()
+            _cache_last_updated = current_time
+            logger.info(f"Refreshed Slack account cache with {len(_slack_account_map_cache)} entries")
+        except Exception as e:
+            logger.error(f"Failed to load Slack accounts from Supabase: {e}")
+            if not _slack_account_map_cache:
+                raise RuntimeError(f"Failed to load Slack accounts and cache is empty: {e}")
+    
+    return _slack_account_map_cache
 
 
-slack_account_map = load_slack_mapping()
+def sync_slack_accounts_to_supabase() -> None:
+    """
+    Background task to sync Slack accounts from Composio to Supabase.
+    Fetches all active Slackbot accounts and updates Supabase.
+    """
+    try:
+        logger.info("Starting background sync of Slack accounts to Supabase...")
+        
+        client = Composio(provider=LangchainProvider())
+        
+        # Fetch all Slackbot accounts (no user_ids filter means fetch all)
+        accounts = client.connected_accounts.list(toolkit_slugs=["SLACKBOT"])
+        mapping = pick_latest_account(accounts)
+        
+        if mapping:
+            count = bulk_upsert_slack_accounts(mapping)
+            logger.info(f"Synced {count} Slack accounts to Supabase")
+            
+            # Invalidate cache to force refresh on next access
+            global _cache_last_updated
+            _cache_last_updated = 0
+        else:
+            logger.info("No new Slack accounts to sync")
+    except Exception as e:
+        logger.error(f"Background sync failed: {e}", exc_info=True)
+
+
+# Initialize cache on startup
+try:
+    _slack_account_map_cache = load_slack_mapping_from_supabase()
+    _cache_last_updated = time.time()
+    logger.info(f"Loaded {len(_slack_account_map_cache)} Slack accounts from Supabase on startup")
+except Exception as e:
+    logger.warning(f"Failed to load Slack accounts on startup: {e}. Will retry on first request.")
 
 composio_client = Composio(provider=LangchainProvider())
 
-app = FastAPI(title="Composio Slack Bridge")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Lifespan context manager for FastAPI.
+    Starts background sync task and stops it on shutdown.
+    """
+    import asyncio
+    
+    # Start background sync task
+    sync_task = asyncio.create_task(background_sync_loop())
+    logger.info(f"Started background sync task (interval: {SYNC_INTERVAL}s)")
+    
+    yield
+    
+    # Cancel sync task on shutdown
+    sync_task.cancel()
+    try:
+        await sync_task
+    except asyncio.CancelledError:
+        logger.info("Background sync task stopped")
+
+
+async def background_sync_loop() -> None:
+    """Background task that syncs Slack accounts periodically."""
+    import asyncio
+    
+    while True:
+        try:
+            await asyncio.sleep(SYNC_INTERVAL)
+            # Run sync in thread pool to avoid blocking
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, sync_slack_accounts_to_supabase)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Background sync loop error: {e}", exc_info=True)
+
+
+app = FastAPI(
+    title="Composio Slack Bridge",
+    lifespan=lifespan
+)
 
 
 def verify_slack_signature(request: Request, raw_body: bytes) -> None:
@@ -109,6 +210,8 @@ def send_slack_message(
 
 
 def resolve_workspace(team_id: str) -> tuple[str, str, str]:
+    """Resolve workspace details from team_id using Supabase cache."""
+    slack_account_map = get_slack_account_map()
     if team_id not in slack_account_map:
         raise HTTPException(status_code=400, detail=f"Unknown team_id {team_id}")
     entry = slack_account_map[team_id]

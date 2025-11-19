@@ -161,19 +161,40 @@ async def facebook_webhook_verify(
     Facebook webhook verification endpoint.
     Facebook sends a GET request with hub.mode, hub.verify_token, and hub.challenge.
     """
-    logger.info(
-        "Webhook verification request: mode=%s, token=%s, challenge=%s",
-        hub_mode,
-        hub_verify_token,
-        hub_challenge,
-    )
-
-    if hub_mode == "subscribe" and hub_verify_token == FACEBOOK_VERIFY_TOKEN:
-        logger.info("Webhook verified successfully")
-        return PlainTextResponse(hub_challenge)
-    else:
-        logger.warning("Webhook verification failed: invalid token or mode")
-        raise HTTPException(status_code=403, detail="Verification failed")
+    logger.info("=" * 60)
+    logger.info("Facebook Webhook Verification Request Received")
+    logger.info("=" * 60)
+    logger.info(f"hub.mode: {hub_mode}")
+    logger.info(f"hub.verify_token: {hub_verify_token}")
+    logger.info(f"hub.challenge: {hub_challenge}")
+    logger.info(f"Expected FACEBOOK_VERIFY_TOKEN: {'SET' if FACEBOOK_VERIFY_TOKEN else 'NOT SET'}")
+    logger.info(f"Token length: {len(FACEBOOK_VERIFY_TOKEN) if FACEBOOK_VERIFY_TOKEN else 0}")
+    
+    # Check if verify token is set
+    if not FACEBOOK_VERIFY_TOKEN:
+        logger.error("FACEBOOK_VERIFY_TOKEN environment variable is not set!")
+        raise HTTPException(
+            status_code=500, 
+            detail="Webhook verification token not configured. Please set FACEBOOK_VERIFY_TOKEN environment variable."
+        )
+    
+    # Check mode
+    if hub_mode != "subscribe":
+        logger.warning(f"Invalid hub.mode: {hub_mode} (expected 'subscribe')")
+        raise HTTPException(status_code=403, detail=f"Invalid mode: {hub_mode}")
+    
+    # Check token match
+    if hub_verify_token != FACEBOOK_VERIFY_TOKEN:
+        logger.warning(
+            f"Token mismatch! Received: '{hub_verify_token}', Expected: '{FACEBOOK_VERIFY_TOKEN}'"
+        )
+        logger.warning("Make sure FACEBOOK_VERIFY_TOKEN in Render matches the token in Meta Developer Portal")
+        raise HTTPException(status_code=403, detail="Verification token mismatch")
+    
+    # Success
+    logger.info("✅ Webhook verified successfully! Returning challenge.")
+    logger.info("=" * 60)
+    return PlainTextResponse(hub_challenge)
 
 
 @app.post("/facebook/webhook")

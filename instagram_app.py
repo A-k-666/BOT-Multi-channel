@@ -75,18 +75,34 @@ def send_instagram_message(
 ) -> dict[str, Any]:
     """Send a message via Composio's Instagram toolkit."""
     arguments: dict[str, Any] = {
-        "recipient_id": recipient_id,
-        "text": text,
+        "recipient_id": str(recipient_id),  # Ensure it's a string
+        "text": str(text),  # Ensure it's a string
     }
 
-    return composio_client.tools.execute(
-        slug="INSTAGRAM_SEND_TEXT_MESSAGE",
-        arguments=arguments,
-        user_id=org_id,
-        connected_account_id=connected_account_id,
-        version="latest",
-        dangerously_skip_version_check=True,
+    logger.info(
+        f"Executing INSTAGRAM_SEND_TEXT_MESSAGE with args: {arguments}, "
+        f"org_id={org_id}, connected_account_id={connected_account_id}"
     )
+    
+    try:
+        result = composio_client.tools.execute(
+            slug="INSTAGRAM_SEND_TEXT_MESSAGE",
+            arguments=arguments,
+            user_id=org_id,
+            connected_account_id=connected_account_id,
+            version="latest",
+            dangerously_skip_version_check=True,
+        )
+        logger.info(f"Composio tool execution result: {json.dumps(result, indent=2)}")
+        return result
+    except Exception as e:
+        logger.error(f"Exception during tool execution: {type(e).__name__}: {e}")
+        # Try to get more details from the exception
+        if hasattr(e, 'response'):
+            logger.error(f"Exception response: {e.response}")
+        if hasattr(e, 'body'):
+            logger.error(f"Exception body: {e.body}")
+        raise
 
 
 def get_composio_account() -> tuple[str, str]:
@@ -167,8 +183,12 @@ async def instagram_webhook(request: Request):
         messaging = entry_item.get("messaging", [])
         changes = entry_item.get("changes", [])
         
+        logger.info(f"Processing entry: messaging events={len(messaging)}, changes={len(changes)}")
+        
         # Handle messaging events (Direct Messages)
         for event in messaging:
+            logger.info(f"Processing messaging event: {json.dumps(event, indent=2)}")
+            
             if "message" not in event:
                 logger.info("Skipping non-message event: %s", event)
                 continue
@@ -181,10 +201,20 @@ async def instagram_webhook(request: Request):
             recipient_id = recipient.get("id")
             message_text = message.get("text", "").strip()
             message_id = message.get("mid")  # Instagram message ID
+            is_echo = message.get("is_echo", False)
+
+            logger.info(
+                f"Message details: sender_id={sender_id}, recipient_id={recipient_id}, "
+                f"text='{message_text}', message_id={message_id}, is_echo={is_echo}"
+            )
 
             # Skip if message is empty or from a page (echo)
-            if not message_text or message.get("is_echo"):
-                logger.info("Skipping empty or echo message")
+            if not message_text:
+                logger.info("Skipping empty message")
+                continue
+                
+            if is_echo:
+                logger.info("Skipping echo message (sent by page itself)")
                 continue
 
             # Check for duplicates
@@ -193,7 +223,7 @@ async def instagram_webhook(request: Request):
                 continue
 
             logger.info(
-                "Received message from %s: %s",
+                "✅ Processing user message from %s: %s",
                 sender_id,
                 message_text,
             )
@@ -201,6 +231,7 @@ async def instagram_webhook(request: Request):
             # Get Composio account (single account setup)
             try:
                 org_id, connected_account_id = get_composio_account()
+                logger.info(f"Using Composio account: org_id={org_id}, connected_account_id={connected_account_id}")
             except HTTPException as exc:
                 logger.error("Composio account lookup failed: %s", exc.detail)
                 continue
@@ -209,26 +240,31 @@ async def instagram_webhook(request: Request):
             try:
                 logger.info("Dispatching to DeepAgent with text: %s", message_text)
                 reply = run_agent(message_text)
+                logger.info("DeepAgent reply: %s", reply)
             except Exception as agent_error:
                 logger.exception("DeepAgent invocation failed: %s", agent_error)
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
             # Send reply via Composio
             try:
+                logger.info(f"Sending reply to {sender_id} via Composio...")
                 response = send_instagram_message(
                     org_id=org_id,
                     connected_account_id=connected_account_id,
-                    recipient_id=sender_id,
+                    recipient_id=str(sender_id),  # Ensure it's a string
                     text=reply,
                 )
-                logger.info("Sent response via Composio: %s", response)
+                logger.info("✅ Successfully sent response via Composio: %s", json.dumps(response, indent=2))
             except Exception as send_error:
-                logger.exception("Failed to send message via Composio: %s", send_error)
+                logger.exception("❌ Failed to send message via Composio: %s", send_error)
+                logger.error("Error type: %s, Error details: %s", type(send_error).__name__, str(send_error))
 
         # Handle changes events (if any)
         for change in changes:
             field = change.get("field")
             value = change.get("value", {})
+            
+            logger.info(f"Processing change event: field={field}, value={json.dumps(value, indent=2)}")
             
             # Handle messaging field changes
             if field == "messages":
@@ -238,8 +274,19 @@ async def instagram_webhook(request: Request):
                     sender_id = message_data.get("from", {}).get("id")
                     message_text = message_data.get("text", "").strip()
                     message_id = message_data.get("id")
+                    is_echo = message_data.get("is_echo", False)
+                    
+                    logger.info(
+                        f"Change message details: sender_id={sender_id}, "
+                        f"text='{message_text}', message_id={message_id}, is_echo={is_echo}"
+                    )
                     
                     if not message_text or not sender_id:
+                        logger.info("Skipping change event: empty text or missing sender_id")
+                        continue
+                    
+                    if is_echo:
+                        logger.info("Skipping echo message in change event")
                         continue
                     
                     if message_id and _is_duplicate(message_id):
@@ -247,7 +294,7 @@ async def instagram_webhook(request: Request):
                         continue
                     
                     logger.info(
-                        "Received message from %s: %s",
+                        "✅ Processing user message from changes: %s: %s",
                         sender_id,
                         message_text,
                     )
@@ -255,6 +302,7 @@ async def instagram_webhook(request: Request):
                     # Get Composio account (single account setup)
                     try:
                         org_id, connected_account_id = get_composio_account()
+                        logger.info(f"Using Composio account: org_id={org_id}, connected_account_id={connected_account_id}")
                     except HTTPException as exc:
                         logger.error("Composio account lookup failed: %s", exc.detail)
                         continue
@@ -263,21 +311,24 @@ async def instagram_webhook(request: Request):
                     try:
                         logger.info("Dispatching to DeepAgent with text: %s", message_text)
                         reply = run_agent(message_text)
+                        logger.info("DeepAgent reply: %s", reply)
                     except Exception as agent_error:
                         logger.exception("DeepAgent invocation failed: %s", agent_error)
                         reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
                     
                     # Send reply
                     try:
+                        logger.info(f"Sending reply to {sender_id} via Composio...")
                         response = send_instagram_message(
                             org_id=org_id,
                             connected_account_id=connected_account_id,
-                            recipient_id=sender_id,
+                            recipient_id=str(sender_id),  # Ensure it's a string
                             text=reply,
                         )
-                        logger.info("Sent response via Composio: %s", response)
+                        logger.info("✅ Successfully sent response via Composio: %s", json.dumps(response, indent=2))
                     except Exception as send_error:
-                        logger.exception("Failed to send message via Composio: %s", send_error)
+                        logger.exception("❌ Failed to send message via Composio: %s", send_error)
+                        logger.error("Error type: %s, Error details: %s", type(send_error).__name__, str(send_error))
 
     return JSONResponse({"ok": True})
 

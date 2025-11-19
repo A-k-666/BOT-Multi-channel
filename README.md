@@ -11,4 +11,6 @@ Slack, Telegram, Discord, and Facebook each need their own running process, all 
 
 **Facebook**: deploy facebook_app.py as a web service (e.g., Render Web Service). Set environment variables: COMPOSIO_API_KEY, OPENAI_API_KEY, FACEBOOK_VERIFY_TOKEN, FACEBOOK_ORG_ID, FACEBOOK_CONNECTED_ACCOUNT_ID. Expose /facebook/webhook over HTTPS and configure Facebook webhook in Facebook Developer Dashboard. For single page setup, just set env vars (no JSON needed).
 
-Each service includes the shared files (DeepAgent.py, composio_helpers.py, slack_accounts.json, facebook_accounts.json, requirements.txt). Composio handles authentication/tool execution; you still host the processes.
+**Instagram**: deploy instagram_app.py as a web service (e.g., Render Web Service). Set environment variables: COMPOSIO_API_KEY, OPENAI_API_KEY, INSTAGRAM_VERIFY_TOKEN, INSTAGRAM_ORG_ID, INSTAGRAM_CONNECTED_ACCOUNT_ID, INSTAGRAM_ACCOUNT_ID. Expose /instagram/webhook over HTTPS and configure Instagram webhook in Instagram/Facebook Developer Dashboard. For single account setup, just set env vars (no JSON needed).
+
+Each service includes the shared files (DeepAgent.py, composio_helpers.py, slack_accounts.json, facebook_accounts.json, instagram_accounts.json, requirements.txt). Composio handles authentication/tool execution; you still host the processes.

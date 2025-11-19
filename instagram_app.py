@@ -76,11 +76,11 @@ def send_instagram_message(
     """Send a message via Composio's Instagram toolkit."""
     arguments: dict[str, Any] = {
         "recipient_id": recipient_id,
-        "message_text": text,
+        "text": text,
     }
 
     return composio_client.tools.execute(
-        slug="INSTAGRAM_SEND_MESSAGE",
+        slug="INSTAGRAM_SEND_TEXT_MESSAGE",
         arguments=arguments,
         user_id=org_id,
         connected_account_id=connected_account_id,

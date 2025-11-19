@@ -9,11 +9,10 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "https://fksfhzwhywvtctgbeeoq.supabase.co")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
 SUPABASE_SERVICE_KEY = os.getenv(
     "SUPABASE_SERVICE_ROLE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZrc2ZoendoeXd2dGN0Z2JlZW9xIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc2MzExMjc3MCwiZXhwIjoyMDc4Njg4NzcwfQ.ymEvBZP5RzpJS0E8cTxPeJ1ls0x_FCzX3PVj0mC2gck"
-)
+    ""
 
 _table_name = "slack_accounts"
 

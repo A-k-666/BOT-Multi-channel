@@ -12,7 +12,7 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 from composio import Composio
 from composio_langchain import LangchainProvider
-from DeepAgent import run_agent
+from rag_chat_helpers import get_rag_chat_response
 
 load_dotenv()
 
@@ -236,13 +236,13 @@ async def instagram_webhook(request: Request):
                 logger.error("Composio account lookup failed: %s", exc.detail)
                 continue
 
-            # Process message with DeepAgent
+            # Process message with RAG Super Agent chat API
             try:
-                logger.info("Dispatching to DeepAgent with text: %s", message_text)
-                reply = run_agent(message_text)
-                logger.info("DeepAgent reply: %s", reply)
+                logger.info("Dispatching to RAG chat API with text: %s", message_text)
+                reply = await get_rag_chat_response(message_text)
+                logger.info("RAG chat API reply: %s", reply)
             except Exception as agent_error:
-                logger.exception("DeepAgent invocation failed: %s", agent_error)
+                logger.exception("RAG chat API invocation failed: %s", agent_error)
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
             # Send reply via Composio
@@ -307,13 +307,13 @@ async def instagram_webhook(request: Request):
                         logger.error("Composio account lookup failed: %s", exc.detail)
                         continue
                     
-                    # Process with DeepAgent
+                    # Process with RAG Super Agent chat API
                     try:
-                        logger.info("Dispatching to DeepAgent with text: %s", message_text)
-                        reply = run_agent(message_text)
-                        logger.info("DeepAgent reply: %s", reply)
+                        logger.info("Dispatching to RAG chat API with text: %s", message_text)
+                        reply = await get_rag_chat_response(message_text)
+                        logger.info("RAG chat API reply: %s", reply)
                     except Exception as agent_error:
-                        logger.exception("DeepAgent invocation failed: %s", agent_error)
+                        logger.exception("RAG chat API invocation failed: %s", agent_error)
                         reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
                     
                     # Send reply
@@ -337,4 +337,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="0.0.0.0", port=8002)
-

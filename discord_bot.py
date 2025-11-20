@@ -4,7 +4,7 @@ import discord
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from DeepAgent import run_agent
+from rag_chat_helpers import get_rag_chat_response
 
 load_dotenv()
 
@@ -34,7 +34,7 @@ async def on_message(message: discord.Message):
         if not content:
             content = "Hello!"
         try:
-            reply = run_agent(content)
+            reply = await get_rag_chat_response(content)
         except Exception as exc:
             reply = f"Sorry, something went wrong: {exc}"
         await message.channel.send(reply)

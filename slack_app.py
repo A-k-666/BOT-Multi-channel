@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from composio import Composio
 from composio_langchain import LangchainProvider
-from DeepAgent import run_agent
+from rag_chat_helpers import get_rag_chat_response
 from supabase_helpers import load_slack_mapping_from_supabase, bulk_upsert_slack_accounts
 from scripts.sync_slack_accounts import pick_latest_account
 
@@ -406,12 +406,12 @@ async def slack_events(request: Request):
         cleaned_text = user_text
         if bot_user_id:
             cleaned_text = cleaned_text.replace(f"<@{bot_user_id}>", "").strip()
-        logger.info("Dispatching to DeepAgent with text: %s", cleaned_text)
+        logger.info("Dispatching to RAG chat API with text: %s", cleaned_text)
         print("Dispatching text:", cleaned_text)
-        reply = run_agent(cleaned_text or user_text)
+        reply = await get_rag_chat_response(cleaned_text or user_text)
     except Exception as agent_error:  # pragma: no cover
-        logger.exception("DeepAgent invocation failed: %s", agent_error)
-        print("DeepAgent failed:", agent_error)
+        logger.exception("RAG chat API invocation failed: %s", agent_error)
+        print("RAG chat API failed:", agent_error)
         reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
     response = send_slack_message(

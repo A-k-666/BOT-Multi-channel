@@ -1,16 +1,15 @@
-"""Long-poll Telegram using Composio tools and respond with DeepAgent."""
+"""Long-poll Telegram using Composio tools and respond with RAG Super Agent chat API."""
 
 from __future__ import annotations
-
 import asyncio
 import logging
 from typing import Any
 
-from DeepAgent import run_agent
 from composio_helpers import (
     get_telegram_updates_via_composio,
     send_telegram_message_via_composio,
 )
+from rag_chat_helpers import get_rag_chat_response
 
 logging.basicConfig(
     level=logging.INFO,
@@ -32,9 +31,16 @@ async def handle_update(update: dict[str, Any]) -> None:
         return
 
     logger.info("Received message from %s: %s", chat_id, text)
-    reply = run_agent(text)
-    logger.info("Reply: %s", reply)
-    send_telegram_message_via_composio(chat_id=chat_id, text=reply)
+    
+    try:
+        # Call RAG Super Agent chat API
+        reply = await get_rag_chat_response(text)
+        logger.info("Reply: %s", reply)
+        send_telegram_message_via_composio(chat_id=chat_id, text=reply)
+    except Exception as exc:
+        logger.exception("Error processing message: %s", exc)
+        error_msg = "Sorry, I encountered an error processing your message. Please try again."
+        send_telegram_message_via_composio(chat_id=chat_id, text=error_msg)
 
 
 async def poll_loop() -> None:

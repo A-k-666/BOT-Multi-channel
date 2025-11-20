@@ -12,7 +12,8 @@ from fastapi import FastAPI, HTTPException, Request, Query
 from fastapi.responses import JSONResponse, PlainTextResponse
 from composio import Composio
 from composio_langchain import LangchainProvider
-from DeepAgent import run_agent
+from rag_chat_helpers import get_rag_chat_response
+import httpx
 
 load_dotenv()
 
@@ -26,8 +27,13 @@ FACEBOOK_VERIFY_TOKEN = os.getenv("FACEBOOK_VERIFY_TOKEN", "")
 FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "")
 
 # Single page setup - direct from environment variables
+# Same connection works for both Facebook page and Instagram (since Instagram is linked to Facebook page)
 FACEBOOK_ORG_ID = os.getenv("FACEBOOK_ORG_ID") or os.getenv("COMPOSIO_USER_ID", "")
 FACEBOOK_CONNECTED_ACCOUNT_ID = os.getenv("FACEBOOK_CONNECTED_ACCOUNT_ID", "")
+
+# Facebook Page Access Token for direct Graph API calls (for Instagram messages)
+# Get this from: Facebook Developer Dashboard → Your App → Messenger → Settings → Access Tokens
+FACEBOOK_PAGE_ACCESS_TOKEN = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "")
 
 _processed_message_ids: deque[str] = deque()
 _processed_message_index: set[str] = set()
@@ -63,7 +69,7 @@ async def root():
     """Health check endpoint."""
     return {
         "status": "ok",
-        "service": "Facebook Messenger Bot",
+        "service": "Facebook Messenger & Instagram Bot",
         "webhook_url": "/facebook/webhook",
         "verify_token_set": bool(FACEBOOK_VERIFY_TOKEN),
         "org_id_set": bool(FACEBOOK_ORG_ID),
@@ -94,35 +100,111 @@ def send_facebook_message(
     """Send a message via Composio's Facebook toolkit."""
     arguments: dict[str, Any] = {
         "page_id": page_id,
-        "recipient_id": recipient_id,
-        "message_text": text,  # Facebook toolkit requires "message_text" (not "text")
+        "recipient_id": recipient_id,  # Fixed: was "recipient"
+        "message_text": text,  # Fixed: was "message"
     }
 
-    logger.debug(
-        "Executing FACEBOOK_SEND_MESSAGE with args: %s, org_id=%s, connected_account_id=%s",
-        arguments,
-        org_id,
-        connected_account_id,
+    return composio_client.tools.execute(
+        slug="FACEBOOK_SEND_MESSAGE",
+        arguments=arguments,
+        user_id=org_id,
+        connected_account_id=connected_account_id,
+        version="latest",
+        dangerously_skip_version_check=True,
     )
+
+
+def send_instagram_message_direct(
+    *,
+    instagram_account_id: str,
+    recipient_id: str,
+    text: str,
+    access_token: str | None = None,
+) -> dict[str, Any]:
+    """
+    Send Instagram message directly using Facebook Graph API (without Composio).
+    Uses Facebook Graph API endpoint: POST /{ig-user-id}/messages
+    
+    Args:
+        instagram_account_id: Instagram Business Account ID (e.g., "17841476750803735")
+        recipient_id: Instagram user ID who will receive the message
+        text: Message text to send
+        access_token: Facebook Page Access Token (if not provided, uses FACEBOOK_PAGE_ACCESS_TOKEN env var)
+    
+    Returns:
+        dict with response from Facebook Graph API
+    """
+    if not access_token:
+        access_token = FACEBOOK_PAGE_ACCESS_TOKEN
+    
+    if not access_token:
+        raise ValueError(
+            "Facebook Page Access Token not found. "
+            "Set FACEBOOK_PAGE_ACCESS_TOKEN in .env file. "
+            "Get it from: Facebook Developer Dashboard → Your App → Messenger → Settings → Access Tokens"
+        )
+    
+    # Facebook Graph API endpoint for Instagram messages
+    # Try v18.0 first, fallback to latest if needed
+    url = f"https://graph.facebook.com/v18.0/{instagram_account_id}/messages"
+    
+    # Request payload - Instagram messaging format
+    payload = {
+        "recipient": json.dumps({"id": recipient_id}),
+        "message": json.dumps({"text": text}),
+        "access_token": access_token,
+    }
     
     try:
-        result = composio_client.tools.execute(
-            slug="FACEBOOK_SEND_MESSAGE",
-            arguments=arguments,
-            user_id=org_id,
-            connected_account_id=connected_account_id,
-            version="latest",
-            dangerously_skip_version_check=True,
-        )
-        return result
+        response = httpx.post(url, data=payload, timeout=10.0)
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"Instagram message sent successfully via Graph API: {result}")
+        return {"data": result, "successful": True, "error": None}
+    except httpx.HTTPStatusError as e:
+        error_data = e.response.json() if e.response else {}
+        error_message = error_data.get("error", {}).get("message", str(error_data))
+        error_code = error_data.get("error", {}).get("code", "unknown")
+        
+        logger.error(f"Facebook Graph API error: {e.response.status_code} - {error_message}")
+        
+        # If error is about permissions, provide helpful message
+        if error_code == 3 or "capability" in error_message.lower():
+            logger.error(
+                "Instagram messaging permission not enabled. "
+                "Please enable Instagram messaging in Facebook Developer Dashboard:\n"
+                "1. Go to your Facebook App → Products → Instagram\n"
+                "2. Enable 'Instagram Messaging' product\n"
+                "3. Add 'instagram_basic' and 'instagram_manage_messages' permissions\n"
+                "4. Make sure your app has access to Instagram Business Account"
+            )
+        
+        return {"data": {}, "successful": False, "error": error_message}
     except Exception as e:
-        logger.error(f"Exception during tool execution: {type(e).__name__}: {e}")
-        # Try to get more details from the exception
-        if hasattr(e, 'response'):
-            logger.error(f"Exception response: {e.response}")
-        if hasattr(e, 'body'):
-            logger.error(f"Exception body: {e.body}")
-        raise
+        logger.error(f"Failed to send Instagram message via Graph API: {e}")
+        return {"data": {}, "successful": False, "error": str(e)}
+
+
+def send_instagram_message(
+    *,
+    org_id: str,
+    connected_account_id: str,
+    instagram_account_id: str,
+    recipient_id: str,
+    text: str,
+) -> dict[str, Any]:
+    """
+    Send Instagram message using direct Facebook Graph API (bypasses Composio).
+    This function uses send_instagram_message_direct() which calls Facebook Graph API directly.
+    """
+    logger.info("Sending Instagram message via direct Facebook Graph API")
+    return send_instagram_message_direct(
+        instagram_account_id=instagram_account_id,
+        recipient_id=recipient_id,
+        text=text,
+    )
+
+
 
 
 def resolve_page(page_id: str) -> tuple[str, str]:
@@ -161,40 +243,19 @@ async def facebook_webhook_verify(
     Facebook webhook verification endpoint.
     Facebook sends a GET request with hub.mode, hub.verify_token, and hub.challenge.
     """
-    logger.info("=" * 60)
-    logger.info("Facebook Webhook Verification Request Received")
-    logger.info("=" * 60)
-    logger.info(f"hub.mode: {hub_mode}")
-    logger.info(f"hub.verify_token: {hub_verify_token}")
-    logger.info(f"hub.challenge: {hub_challenge}")
-    logger.info(f"Expected FACEBOOK_VERIFY_TOKEN: {'SET' if FACEBOOK_VERIFY_TOKEN else 'NOT SET'}")
-    logger.info(f"Token length: {len(FACEBOOK_VERIFY_TOKEN) if FACEBOOK_VERIFY_TOKEN else 0}")
-    
-    # Check if verify token is set
-    if not FACEBOOK_VERIFY_TOKEN:
-        logger.error("FACEBOOK_VERIFY_TOKEN environment variable is not set!")
-        raise HTTPException(
-            status_code=500, 
-            detail="Webhook verification token not configured. Please set FACEBOOK_VERIFY_TOKEN environment variable."
-        )
-    
-    # Check mode
-    if hub_mode != "subscribe":
-        logger.warning(f"Invalid hub.mode: {hub_mode} (expected 'subscribe')")
-        raise HTTPException(status_code=403, detail=f"Invalid mode: {hub_mode}")
-    
-    # Check token match
-    if hub_verify_token != FACEBOOK_VERIFY_TOKEN:
-        logger.warning(
-            f"Token mismatch! Received: '{hub_verify_token}', Expected: '{FACEBOOK_VERIFY_TOKEN}'"
-        )
-        logger.warning("Make sure FACEBOOK_VERIFY_TOKEN in Render matches the token in Meta Developer Portal")
-        raise HTTPException(status_code=403, detail="Verification token mismatch")
-    
-    # Success
-    logger.info("✅ Webhook verified successfully! Returning challenge.")
-    logger.info("=" * 60)
-    return PlainTextResponse(hub_challenge)
+    logger.info(
+        "Webhook verification request: mode=%s, token=%s, challenge=%s",
+        hub_mode,
+        hub_verify_token,
+        hub_challenge,
+    )
+
+    if hub_mode == "subscribe" and hub_verify_token == FACEBOOK_VERIFY_TOKEN:
+        logger.info("Webhook verified successfully")
+        return PlainTextResponse(hub_challenge)
+    else:
+        logger.warning("Webhook verification failed: invalid token or mode")
+        raise HTTPException(status_code=403, detail="Verification failed")
 
 
 @app.post("/facebook/webhook")
@@ -217,10 +278,13 @@ async def facebook_webhook(request: Request):
 
     logger.info("Received Facebook webhook payload: %s", json.dumps(payload, indent=2))
 
-    # Handle only Facebook page events (object: "page")
-    # Instagram events are handled by instagram_app.py
+    # Handle Instagram events (object: "instagram")
+    if payload.get("object") == "instagram":
+        return await handle_instagram_webhook(payload)
+    
+    # Handle Facebook page events (object: "page")
     if payload.get("object") != "page":
-        logger.info("Skipping non-page event (object: %s). Instagram events should go to /instagram/webhook", payload.get("object"))
+        logger.warning("Received unknown event type: %s", payload.get("object"))
         return JSONResponse({"ok": True})
 
     entries = payload.get("entry", [])
@@ -270,46 +334,110 @@ async def facebook_webhook(request: Request):
                 logger.error("Page lookup failed for %s: %s", page_id, exc.detail)
                 continue
 
-            # Process message with DeepAgent
+            # Process message with RAG Super Agent chat API
             try:
-                logger.info("Dispatching to DeepAgent with text: %s", message_text)
-                reply = run_agent(message_text)
+                logger.info("Dispatching to RAG chat API with text: %s", message_text)
+                reply = await get_rag_chat_response(message_text)
             except Exception as agent_error:
-                logger.exception("DeepAgent invocation failed: %s", agent_error)
+                logger.exception("RAG chat API invocation failed: %s", agent_error)
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
             # Send reply via Composio
             try:
-                # Ensure recipient_id is string (Facebook Graph API requires string)
-                recipient_id_str = str(sender_id)
-                page_id_str = str(page_id)
-                
-                logger.info(
-                    "Sending Facebook message via Composio: org_id=%s, connected_account_id=%s, page_id=%s, recipient_id=%s",
-                    org_id,
-                    connected_account_id,
-                    page_id_str,
-                    recipient_id_str,
-                )
                 response = send_facebook_message(
                     org_id=org_id,
                     connected_account_id=connected_account_id,
-                    page_id=page_id_str,
-                    recipient_id=recipient_id_str,
+                    page_id=page_id,
+                    recipient_id=sender_id,
                     text=reply,
                 )
                 logger.info("Sent response via Composio: %s", response)
-                if not response.get("successful"):
-                    error_msg = response.get("error", "Unknown error")
-                    logger.error(
-                        "Composio returned unsuccessful response: %s",
-                        error_msg,
-                    )
-                    # Log full response for debugging
-                    logger.error("Full Composio response: %s", json.dumps(response, indent=2))
             except Exception as send_error:
                 logger.exception("Failed to send message via Composio: %s", send_error)
-                logger.error("Exception details: %s", str(send_error))
+
+    return JSONResponse({"ok": True})
+
+
+async def handle_instagram_webhook(payload: dict[str, Any]) -> JSONResponse:
+    """
+    Handle Instagram webhook events.
+    Instagram messages come through Facebook webhook with object: "instagram".
+    """
+    entries = payload.get("entry", [])
+    for entry in entries:
+        instagram_account_id = entry.get("id")  # Instagram account ID
+        if not instagram_account_id:
+            logger.warning("Entry missing Instagram account ID: %s", entry)
+            continue
+
+        messaging_events = entry.get("messaging", [])
+        for event in messaging_events:
+            # Skip if it's not a message event
+            if "message" not in event:
+                logger.info("Skipping non-message event: %s", event)
+                continue
+
+            message = event.get("message", {})
+            sender = event.get("sender", {})
+            recipient = event.get("recipient", {})
+
+            sender_id = sender.get("id")  # User who sent the message
+            recipient_id = recipient.get("id")  # Instagram account ID
+            message_text = message.get("text", "").strip()
+            message_id = message.get("mid")  # Instagram message ID
+
+            # Skip if message is empty or from a page (echo)
+            if not message_text or message.get("is_echo"):
+                logger.info("Skipping empty or echo message")
+                continue
+
+            # Check for duplicates
+            if message_id and _is_duplicate(message_id):
+                logger.info("Duplicate message %s detected; ignoring", message_id)
+                continue
+
+            logger.info(
+                "Received Instagram message from %s to account %s: %s",
+                sender_id,
+                instagram_account_id,
+                message_text,
+            )
+
+            # Use same Facebook connection for Instagram (since Instagram is linked to Facebook page)
+            try:
+                org_id, connected_account_id = resolve_page(instagram_account_id)
+            except HTTPException:
+                # If Instagram account ID not in mapping, use env vars (single page setup)
+                if FACEBOOK_ORG_ID and FACEBOOK_CONNECTED_ACCOUNT_ID:
+                    logger.info("Using Facebook connection for Instagram (linked accounts)")
+                    org_id = FACEBOOK_ORG_ID
+                    connected_account_id = FACEBOOK_CONNECTED_ACCOUNT_ID
+                else:
+                    logger.error(
+                        "Facebook env vars not set. Set FACEBOOK_ORG_ID and FACEBOOK_CONNECTED_ACCOUNT_ID."
+                    )
+                    continue
+
+            # Process message with RAG Super Agent chat API
+            try:
+                logger.info("Dispatching to RAG chat API with text: %s", message_text)
+                reply = await get_rag_chat_response(message_text)
+            except Exception as agent_error:
+                logger.exception("RAG chat API invocation failed: %s", agent_error)
+                reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
+
+            # Send reply via Facebook Graph API (Instagram is linked to Facebook page)
+            try:
+                response = send_instagram_message(
+                    org_id=org_id,
+                    connected_account_id=connected_account_id,
+                    instagram_account_id=instagram_account_id,
+                    recipient_id=sender_id,
+                    text=reply,
+                )
+                logger.info("Sent Instagram response: %s", response)
+            except Exception as send_error:
+                logger.exception("Failed to send Instagram message: %s", send_error)
 
     return JSONResponse({"ok": True})
 

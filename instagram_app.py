@@ -218,10 +218,23 @@ def get_instagram_access_token_from_composio(
         
         if resolved_org_id and resolved_account_id:
             # Get connected account details from Composio
-            account = composio_client.connected_accounts.get(
-                user_id=resolved_org_id,
-                connected_account_id=resolved_account_id,
-            )
+            # Try to get account by ID directly (without user_id parameter)
+            try:
+                account = composio_client.connected_accounts.get(
+                    connected_account_id=resolved_account_id,
+                )
+            except (TypeError, AttributeError):
+                # If that doesn't work, list and filter
+                accounts = composio_client.connected_accounts.list(
+                    user_ids=[resolved_org_id],
+                )
+                account = None
+                for acc in accounts.items:
+                    if acc.id == resolved_account_id:
+                        account = acc
+                        break
+                if not account:
+                    raise ValueError(f"Connected account {resolved_account_id} not found")
             
             logger.info(f"Retrieved Composio account: {account.id}, type: {type(account)}")
             
@@ -296,10 +309,23 @@ def get_instagram_business_account_id_from_composio(
         
         if resolved_org_id and resolved_account_id:
             # Get connected account details from Composio
-            account = composio_client.connected_accounts.get(
-                user_id=resolved_org_id,
-                connected_account_id=resolved_account_id,
-            )
+            # Try to get account by ID directly (without user_id parameter)
+            try:
+                account = composio_client.connected_accounts.get(
+                    connected_account_id=resolved_account_id,
+                )
+            except (TypeError, AttributeError):
+                # If that doesn't work, list and filter
+                accounts = composio_client.connected_accounts.list(
+                    user_ids=[resolved_org_id],
+                )
+                account = None
+                for acc in accounts.items:
+                    if acc.id == resolved_account_id:
+                        account = acc
+                        break
+                if not account:
+                    raise ValueError(f"Connected account {resolved_account_id} not found")
             
             ig_id = None
             

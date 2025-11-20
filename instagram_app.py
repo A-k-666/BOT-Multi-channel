@@ -500,18 +500,14 @@ def reply_to_instagram_comment(
     Returns:
         dict with response from Composio
     """
+    # Only pass required parameters as per Composio docs
     arguments: dict[str, Any] = {
-        "ig_comment_id": str(comment_id),  # Composio expects 'ig_comment_id', not 'comment_id'
-        "message": str(reply_text),
+        "ig_comment_id": str(comment_id),  # REQUIRED: Instagram Comment ID to reply to
+        "message": str(reply_text),  # REQUIRED: Reply message text
     }
     
-    # Add media_id if provided (some tools might need it)
-    if media_id:
-        arguments["media_id"] = str(media_id)
-    
-    # Add Instagram Business Account ID if provided (some tools might need it)
-    if instagram_business_account_id:
-        arguments["instagram_business_account_id"] = str(instagram_business_account_id)
+    # Optional: graph_api_version (defaults to "v21.0" if not provided)
+    # We can add it if needed, but let's use default for now
     
     logger.info(
         f"Executing INSTAGRAM_REPLY_TO_COMMENT with args: {arguments}, "

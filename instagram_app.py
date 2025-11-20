@@ -506,13 +506,20 @@ def reply_to_instagram_comment(
             logger.error(f"Failed to get access token: {e}")
             raise ValueError(f"Facebook Page Access Token not found: {e}")
     
-    # Get Instagram Business Account ID from Composio/account_config if not provided
+    # Get Instagram Business Account ID from account_config or use provided one
     if not instagram_account_id:
-        try:
-            instagram_account_id = get_instagram_business_account_id_from_composio(org_id, connected_account_id, account_config)
-        except Exception as e:
-            logger.error(f"Failed to get Instagram Business Account ID: {e}")
-            raise ValueError(f"Instagram Business Account ID not found: {e}")
+        # First check account_config (from JSON mapping)
+        if account_config and account_config.get("instagram_business_account_id"):
+            instagram_account_id = account_config.get("instagram_business_account_id")
+            logger.info(f"✅ Using Instagram Business Account ID from account config: {instagram_account_id}")
+        else:
+            # Try to get from Composio
+            try:
+                instagram_account_id = get_instagram_business_account_id_from_composio(org_id, connected_account_id, account_config)
+            except Exception as e:
+                logger.warning(f"Failed to get Instagram Business Account ID from Composio: {e}")
+                # If not found, this is a critical error - we need the ID to reply
+                raise ValueError(f"Instagram Business Account ID not found. Please add it to instagram_accounts.json or set in account config.")
     
     # Facebook Graph API endpoint for replying to Instagram comments
     # POST /<IG_ID>/mentions
@@ -875,12 +882,17 @@ async def process_instagram_comment(
                 instagram_business_account_id
             )
         
+        # Ensure Instagram Business Account ID is in account_config (use webhook ID if not present)
+        if account_config and not account_config.get("instagram_business_account_id"):
+            account_config["instagram_business_account_id"] = instagram_business_account_id
+        
         response = reply_to_instagram_comment(
             comment_id=comment_id,
             reply_text=reply_text,
             org_id=org_id,
             connected_account_id=connected_account_id,
             account_config=account_config,
+            instagram_account_id=instagram_business_account_id,  # Pass webhook ID directly
         )
         
         if response.get("successful"):

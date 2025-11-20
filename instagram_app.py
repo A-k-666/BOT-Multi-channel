@@ -494,7 +494,7 @@ def reply_to_instagram_comment(
         dict with response from Composio
     """
     arguments: dict[str, Any] = {
-        "comment_id": str(comment_id),
+        "ig_comment_id": str(comment_id),  # Composio expects 'ig_comment_id', not 'comment_id'
         "message": str(reply_text),
     }
     

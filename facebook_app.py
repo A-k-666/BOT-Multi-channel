@@ -89,9 +89,9 @@ def _is_duplicate(message_id: str) -> bool:
     return False
 
 
-def split_message_for_instagram(text: str, max_length: int = 1900) -> list[str]:
+def split_message_for_social_media(text: str, max_length: int = 1900) -> list[str]:
     """
-    Split a long message into chunks that fit Instagram's 2000 character limit.
+    Split a long message into chunks that fit Facebook/Instagram's 2000 character limit.
     Tries to split at sentence boundaries when possible.
     
     Args:
@@ -413,16 +413,31 @@ async def facebook_webhook(request: Request):
                 logger.exception("RAG chat API invocation failed: %s", agent_error)
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
-            # Send reply via Composio
+            # Send reply via Composio (split into chunks if too long)
             try:
-                response = send_facebook_message(
-                    org_id=org_id,
-                    connected_account_id=connected_account_id,
-                    page_id=page_id,
-                    recipient_id=sender_id,
-                    text=reply,
-                )
-                logger.info("Sent response via Composio: %s", response)
+                message_chunks = split_message_for_social_media(reply)
+                logger.info(f"Facebook message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
+                
+                for i, chunk in enumerate(message_chunks):
+                    logger.info(f"Sending Facebook chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
+                    response = send_facebook_message(
+                        org_id=org_id,
+                        connected_account_id=connected_account_id,
+                        page_id=page_id,
+                        recipient_id=sender_id,
+                        text=chunk,
+                    )
+                    if not response.get("successful"):
+                        logger.error(f"Failed to send Facebook chunk {i+1}: {response.get('error')}")
+                    else:
+                        logger.info(f"✅ Successfully sent Facebook chunk {i+1}/{len(message_chunks)}")
+                    
+                    # Small delay between chunks to avoid rate limiting
+                    if i < len(message_chunks) - 1:
+                        import asyncio
+                        await asyncio.sleep(0.5)
+                
+                logger.info("✅ Successfully sent all Facebook response chunks")
             except Exception as send_error:
                 logger.exception("Failed to send message via Composio: %s", send_error)
 
@@ -500,7 +515,7 @@ async def handle_instagram_webhook(payload: dict[str, Any]) -> JSONResponse:
             # Send reply via Facebook Graph API (Instagram is linked to Facebook page)
             # Split into chunks if message is too long
             try:
-                message_chunks = split_message_for_instagram(reply)
+                message_chunks = split_message_for_social_media(reply)
                 logger.info(f"Instagram message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
                 
                 for i, chunk in enumerate(message_chunks):

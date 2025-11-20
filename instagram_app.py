@@ -29,8 +29,8 @@ INSTAGRAM_VERIFY_TOKEN = os.getenv("INSTAGRAM_VERIFY_TOKEN", "")
 INSTAGRAM_ORG_ID = os.getenv("INSTAGRAM_ORG_ID") or os.getenv("COMPOSIO_USER_ID", "")
 INSTAGRAM_CONNECTED_ACCOUNT_ID = os.getenv("INSTAGRAM_CONNECTED_ACCOUNT_ID", "")
 
-# Facebook Page Access Token for Instagram Graph API calls (fallback to env var if not in Composio)
-FACEBOOK_PAGE_ACCESS_TOKEN = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+# Instagram Access Token for Instagram Graph API calls (fallback to env var if not in Composio)
+INSTAGRAM_ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN", "")
 
 # Instagram Business Account ID (fallback to env var if not in Composio)
 INSTAGRAM_BUSINESS_ACCOUNT_ID = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
@@ -211,7 +211,7 @@ def get_composio_account_for_instagram(instagram_business_account_id: str) -> tu
     
     Returns:
         tuple: (org_id, connected_account_id, account_config)
-        account_config contains: facebook_page_access_token, instagram_business_account_id, etc.
+        account_config contains: instagram_access_token (or facebook_page_access_token for backward compatibility), instagram_business_account_id, etc.
     """
     # Load account mappings
     account_map = load_instagram_account_mapping()
@@ -230,7 +230,7 @@ def get_composio_account_for_instagram(instagram_business_account_id: str) -> tu
     if INSTAGRAM_ORG_ID and INSTAGRAM_CONNECTED_ACCOUNT_ID:
         logger.info("Using environment variables for single account setup")
         config = {
-            "facebook_page_access_token": FACEBOOK_PAGE_ACCESS_TOKEN,
+            "instagram_access_token": INSTAGRAM_ACCESS_TOKEN,
             "instagram_business_account_id": INSTAGRAM_BUSINESS_ACCOUNT_ID or instagram_business_account_id,
         }
         return INSTAGRAM_ORG_ID, INSTAGRAM_CONNECTED_ACCOUNT_ID, config
@@ -270,14 +270,15 @@ def get_instagram_access_token_from_composio(
     account_config: dict[str, Any] | None = None,
 ) -> str:
     """
-    Get Facebook Page Access Token from Composio connected account or account config.
+    Get Instagram Access Token from Composio connected account or account config.
     Falls back to environment variable if not found in Composio.
     """
     # First check account_config (from JSON mapping)
     if account_config:
-        token = account_config.get("facebook_page_access_token")
+        # Check for instagram_access_token first, then fallback to facebook_page_access_token for backward compatibility
+        token = account_config.get("instagram_access_token") or account_config.get("facebook_page_access_token")
         if token and token.strip():  # Only use if token is not empty
-            logger.info("✅ Using access token from account config (JSON mapping)")
+            logger.info("✅ Using Instagram access token from account config (JSON mapping)")
             return str(token)
     
     # Then try to get from Composio connected account
@@ -316,10 +317,11 @@ def get_instagram_access_token_from_composio(
                 metadata = account.metadata if isinstance(account.metadata, dict) else {}
                 logger.debug(f"Account metadata keys: {list(metadata.keys()) if isinstance(metadata, dict) else 'N/A'}")
                 token = (
+                    metadata.get("instagram_access_token") or
                     metadata.get("access_token") or
                     metadata.get("page_access_token") or
                     metadata.get("token") or
-                    metadata.get("facebook_page_access_token")
+                    metadata.get("facebook_page_access_token")  # Backward compatibility
                 )
             
             # Check config
@@ -328,10 +330,11 @@ def get_instagram_access_token_from_composio(
                 logger.debug(f"Account config keys: {list(config.keys()) if isinstance(config, dict) else 'N/A'}")
                 if isinstance(config, dict):
                     token = (
+                        config.get("instagram_access_token") or
                         config.get("access_token") or
                         config.get("page_access_token") or
                         config.get("token") or
-                        config.get("facebook_page_access_token")
+                        config.get("facebook_page_access_token")  # Backward compatibility
                     )
             
             # Check account attributes directly
@@ -353,13 +356,13 @@ def get_instagram_access_token_from_composio(
         logger.debug(f"Exception details: {type(e).__name__}: {str(e)}")
     
     # Fallback to environment variable
-    if FACEBOOK_PAGE_ACCESS_TOKEN:
-        logger.info("Using access token from environment variable")
-        return FACEBOOK_PAGE_ACCESS_TOKEN
+    if INSTAGRAM_ACCESS_TOKEN:
+        logger.info("Using Instagram access token from environment variable")
+        return INSTAGRAM_ACCESS_TOKEN
     
     raise ValueError(
-        "Facebook Page Access Token not found. "
-        "Either connect Instagram account via Composio or set FACEBOOK_PAGE_ACCESS_TOKEN in .env file."
+        "Instagram Access Token not found. "
+        "Either connect Instagram account via Composio or set INSTAGRAM_ACCESS_TOKEN in .env file."
     )
 
 

@@ -66,6 +66,77 @@ def _is_duplicate(message_id: str) -> bool:
     return False
 
 
+def split_message_for_instagram(text: str, max_length: int = 1900) -> list[str]:
+    """
+    Split a long message into chunks that fit Instagram's 2000 character limit.
+    Tries to split at sentence boundaries when possible.
+    
+    Args:
+        text: The message text to split
+        max_length: Maximum length per chunk (default 1900 to be safe)
+    
+    Returns:
+        List of message chunks
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Try to split by sentences first
+    sentences = text.split('. ')
+    
+    for sentence in sentences:
+        # If adding this sentence would exceed limit, save current chunk and start new
+        if current_chunk and len(current_chunk) + len(sentence) + 2 > max_length:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += ". " + sentence
+            else:
+                current_chunk = sentence
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    # If any chunk is still too long, split by newlines
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_length:
+            final_chunks.append(chunk)
+        else:
+            # Split by newlines
+            lines = chunk.split('\n')
+            temp_chunk = ""
+            for line in lines:
+                if len(temp_chunk) + len(line) + 1 > max_length:
+                    if temp_chunk:
+                        final_chunks.append(temp_chunk.strip())
+                    temp_chunk = line
+                else:
+                    if temp_chunk:
+                        temp_chunk += "\n" + line
+                    else:
+                        temp_chunk = line
+            if temp_chunk:
+                final_chunks.append(temp_chunk.strip())
+    
+    # Final fallback: if still too long, hard split
+    really_final_chunks = []
+    for chunk in final_chunks:
+        if len(chunk) <= max_length:
+            really_final_chunks.append(chunk)
+        else:
+            # Hard split at max_length
+            for i in range(0, len(chunk), max_length):
+                really_final_chunks.append(chunk[i:i + max_length])
+    
+    return really_final_chunks
+
+
 def send_instagram_message(
     *,
     org_id: str,
@@ -245,16 +316,31 @@ async def instagram_webhook(request: Request):
                 logger.exception("RAG chat API invocation failed: %s", agent_error)
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
-            # Send reply via Composio
+            # Send reply via Composio (split into chunks if too long)
             try:
                 logger.info(f"Sending reply to {sender_id} via Composio...")
-                response = send_instagram_message(
-                    org_id=org_id,
-                    connected_account_id=connected_account_id,
-                    recipient_id=str(sender_id),  # Ensure it's a string
-                    text=reply,
-                )
-                logger.info("✅ Successfully sent response via Composio: %s", json.dumps(response, indent=2))
+                message_chunks = split_message_for_instagram(reply)
+                logger.info(f"Message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
+                
+                for i, chunk in enumerate(message_chunks):
+                    logger.info(f"Sending chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
+                    response = send_instagram_message(
+                        org_id=org_id,
+                        connected_account_id=connected_account_id,
+                        recipient_id=str(sender_id),  # Ensure it's a string
+                        text=chunk,
+                    )
+                    if not response.get("successful"):
+                        logger.error(f"Failed to send chunk {i+1}: {response.get('error')}")
+                    else:
+                        logger.info(f"✅ Successfully sent chunk {i+1}/{len(message_chunks)}")
+                    
+                    # Small delay between chunks to avoid rate limiting
+                    if i < len(message_chunks) - 1:
+                        import asyncio
+                        await asyncio.sleep(0.5)
+                
+                logger.info("✅ Successfully sent all response chunks via Composio")
             except Exception as send_error:
                 logger.exception("❌ Failed to send message via Composio: %s", send_error)
                 logger.error("Error type: %s, Error details: %s", type(send_error).__name__, str(send_error))
@@ -316,16 +402,31 @@ async def instagram_webhook(request: Request):
                         logger.exception("RAG chat API invocation failed: %s", agent_error)
                         reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
                     
-                    # Send reply
+                    # Send reply (split into chunks if too long)
                     try:
                         logger.info(f"Sending reply to {sender_id} via Composio...")
-                        response = send_instagram_message(
-                            org_id=org_id,
-                            connected_account_id=connected_account_id,
-                            recipient_id=str(sender_id),  # Ensure it's a string
-                            text=reply,
-                        )
-                        logger.info("✅ Successfully sent response via Composio: %s", json.dumps(response, indent=2))
+                        message_chunks = split_message_for_instagram(reply)
+                        logger.info(f"Message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
+                        
+                        for i, chunk in enumerate(message_chunks):
+                            logger.info(f"Sending chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
+                            response = send_instagram_message(
+                                org_id=org_id,
+                                connected_account_id=connected_account_id,
+                                recipient_id=str(sender_id),  # Ensure it's a string
+                                text=chunk,
+                            )
+                            if not response.get("successful"):
+                                logger.error(f"Failed to send chunk {i+1}: {response.get('error')}")
+                            else:
+                                logger.info(f"✅ Successfully sent chunk {i+1}/{len(message_chunks)}")
+                            
+                            # Small delay between chunks to avoid rate limiting
+                            if i < len(message_chunks) - 1:
+                                import asyncio
+                                await asyncio.sleep(0.5)
+                        
+                        logger.info("✅ Successfully sent all response chunks via Composio")
                     except Exception as send_error:
                         logger.exception("❌ Failed to send message via Composio: %s", send_error)
                         logger.error("Error type: %s, Error details: %s", type(send_error).__name__, str(send_error))

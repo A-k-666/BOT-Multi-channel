@@ -89,6 +89,77 @@ def _is_duplicate(message_id: str) -> bool:
     return False
 
 
+def split_message_for_instagram(text: str, max_length: int = 1900) -> list[str]:
+    """
+    Split a long message into chunks that fit Instagram's 2000 character limit.
+    Tries to split at sentence boundaries when possible.
+    
+    Args:
+        text: The message text to split
+        max_length: Maximum length per chunk (default 1900 to be safe)
+    
+    Returns:
+        List of message chunks
+    """
+    if len(text) <= max_length:
+        return [text]
+    
+    chunks = []
+    current_chunk = ""
+    
+    # Try to split by sentences first
+    sentences = text.split('. ')
+    
+    for sentence in sentences:
+        # If adding this sentence would exceed limit, save current chunk and start new
+        if current_chunk and len(current_chunk) + len(sentence) + 2 > max_length:
+            chunks.append(current_chunk.strip())
+            current_chunk = sentence
+        else:
+            if current_chunk:
+                current_chunk += ". " + sentence
+            else:
+                current_chunk = sentence
+    
+    # Add the last chunk
+    if current_chunk:
+        chunks.append(current_chunk.strip())
+    
+    # If any chunk is still too long, split by newlines
+    final_chunks = []
+    for chunk in chunks:
+        if len(chunk) <= max_length:
+            final_chunks.append(chunk)
+        else:
+            # Split by newlines
+            lines = chunk.split('\n')
+            temp_chunk = ""
+            for line in lines:
+                if len(temp_chunk) + len(line) + 1 > max_length:
+                    if temp_chunk:
+                        final_chunks.append(temp_chunk.strip())
+                    temp_chunk = line
+                else:
+                    if temp_chunk:
+                        temp_chunk += "\n" + line
+                    else:
+                        temp_chunk = line
+            if temp_chunk:
+                final_chunks.append(temp_chunk.strip())
+    
+    # Final fallback: if still too long, hard split
+    really_final_chunks = []
+    for chunk in final_chunks:
+        if len(chunk) <= max_length:
+            really_final_chunks.append(chunk)
+        else:
+            # Hard split at max_length
+            for i in range(0, len(chunk), max_length):
+                really_final_chunks.append(chunk[i:i + max_length])
+    
+    return really_final_chunks
+
+
 def send_facebook_message(
     *,
     org_id: str,
@@ -427,15 +498,31 @@ async def handle_instagram_webhook(payload: dict[str, Any]) -> JSONResponse:
                 reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
 
             # Send reply via Facebook Graph API (Instagram is linked to Facebook page)
+            # Split into chunks if message is too long
             try:
-                response = send_instagram_message(
-                    org_id=org_id,
-                    connected_account_id=connected_account_id,
-                    instagram_account_id=instagram_account_id,
-                    recipient_id=sender_id,
-                    text=reply,
-                )
-                logger.info("Sent Instagram response: %s", response)
+                message_chunks = split_message_for_instagram(reply)
+                logger.info(f"Instagram message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
+                
+                for i, chunk in enumerate(message_chunks):
+                    logger.info(f"Sending Instagram chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
+                    response = send_instagram_message(
+                        org_id=org_id,
+                        connected_account_id=connected_account_id,
+                        instagram_account_id=instagram_account_id,
+                        recipient_id=sender_id,
+                        text=chunk,
+                    )
+                    if not response.get("successful"):
+                        logger.error(f"Failed to send Instagram chunk {i+1}: {response.get('error')}")
+                    else:
+                        logger.info(f"✅ Successfully sent Instagram chunk {i+1}/{len(message_chunks)}")
+                    
+                    # Small delay between chunks to avoid rate limiting
+                    if i < len(message_chunks) - 1:
+                        import asyncio
+                        await asyncio.sleep(0.5)
+                
+                logger.info("✅ Successfully sent all Instagram response chunks")
             except Exception as send_error:
                 logger.exception("Failed to send Instagram message: %s", send_error)
 

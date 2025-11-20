@@ -24,7 +24,7 @@ env/
 /dump/
 /slack_accounts.json
 /facebook_accounts.json
-/instagram_accounts.json
+# # /instagram_accounts.json  # Removed: Now committed for easier multi-account setup  # Removed: Now committed to repo for easier setup
 /future.md
 /tests/slack_send_test.py
 /commands.txt

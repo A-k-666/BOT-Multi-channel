@@ -274,9 +274,9 @@ def get_instagram_access_token_from_composio(
     Falls back to environment variable if not found in Composio.
     """
     # First check account_config (from JSON mapping)
-    if account_config and account_config.get("facebook_page_access_token"):
+    if account_config:
         token = account_config.get("facebook_page_access_token")
-        if token:
+        if token and token.strip():  # Only use if token is not empty
             logger.info("✅ Using access token from account config (JSON mapping)")
             return str(token)
     

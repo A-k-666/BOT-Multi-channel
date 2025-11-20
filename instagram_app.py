@@ -523,9 +523,10 @@ def reply_to_instagram_comment(
     
     # Facebook Graph API endpoint for replying to Instagram comments
     # POST /<IG_ID>/mentions
-    url = f"https://graph.instagram.com/v18.0/{instagram_account_id}/mentions"
+    # Use graph.facebook.com (not graph.instagram.com) for mentions endpoint
+    url = f"https://graph.facebook.com/v18.0/{instagram_account_id}/mentions"
     
-    # Request payload
+    # Request payload - Instagram mentions API format
     payload = {
         "comment_id": comment_id,
         "message": reply_text,

@@ -716,13 +716,17 @@ async def handle_instagram_comment_webhook(payload: dict[str, Any]) -> None:
             
             # Check if it's a comment event
             if field == "comments":
-                comment_data = value.get("comment", {})
-                comment_id = comment_data.get("id")
-                comment_text = comment_data.get("text", "")
-                media_id = value.get("media", {}).get("id")
+                # Instagram webhook format: comment data is directly in value, not nested under "comment"
+                # Format: {"value": {"id": "comment_id", "text": "comment text", "from": {...}, "media": {...}}}
+                comment_id = value.get("id")  # Comment ID is directly in value
+                comment_text = value.get("text", "")
+                media_id = value.get("media", {}).get("id") if isinstance(value.get("media"), dict) else None
+                from_user = value.get("from", {})
+                from_user_id = from_user.get("id") if isinstance(from_user, dict) else None
                 
                 if not comment_id:
                     logger.warning("Comment event missing comment ID: %s", change)
+                    logger.debug(f"Value keys: {list(value.keys()) if isinstance(value, dict) else 'N/A'}")
                     continue
                 
                 # Skip if already processed

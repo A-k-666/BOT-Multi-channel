@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from composio import Composio
 from composio_langchain import LangchainProvider
 from rag_chat_helpers import get_rag_chat_response
+import httpx
 
 load_dotenv()
 
@@ -28,8 +29,17 @@ INSTAGRAM_VERIFY_TOKEN = os.getenv("INSTAGRAM_VERIFY_TOKEN", "")
 INSTAGRAM_ORG_ID = os.getenv("INSTAGRAM_ORG_ID") or os.getenv("COMPOSIO_USER_ID", "")
 INSTAGRAM_CONNECTED_ACCOUNT_ID = os.getenv("INSTAGRAM_CONNECTED_ACCOUNT_ID", "")
 
+# Facebook Page Access Token for Instagram Graph API calls
+FACEBOOK_PAGE_ACCESS_TOKEN = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "")
+
+# Instagram Business Account ID
+INSTAGRAM_BUSINESS_ACCOUNT_ID = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
+
 _processed_message_ids: deque[str] = deque()
 _processed_message_index: set[str] = set()
+
+_processed_comment_ids: deque[str] = deque()
+_processed_comment_index: set[str] = set()
 
 DEFAULT_RESPONSE_TEXT = os.getenv(
     "INSTAGRAM_DEFAULT_RESPONSE",
@@ -193,6 +203,81 @@ def get_composio_account() -> tuple[str, str]:
     )
 
 
+def _is_duplicate_comment(comment_id: str) -> bool:
+    """Check if comment ID was already processed."""
+    if comment_id in _processed_comment_index:
+        return True
+    _processed_comment_ids.append(comment_id)
+    _processed_comment_index.add(comment_id)
+    while len(_processed_comment_ids) > 500:
+        old = _processed_comment_ids.popleft()
+        _processed_comment_index.discard(old)
+    return False
+
+
+def reply_to_instagram_comment(
+    comment_id: str,
+    reply_text: str = "thank you for commenting",
+    access_token: str | None = None,
+) -> dict[str, Any]:
+    """
+    Reply to an Instagram comment using Facebook Graph API.
+    
+    Uses POST /<IG_ID>/mentions endpoint to reply to comments.
+    
+    Args:
+        comment_id: The Instagram comment ID to reply to
+        reply_text: The reply message text (default: "thank you for commenting")
+        access_token: Facebook Page Access Token (if not provided, uses FACEBOOK_PAGE_ACCESS_TOKEN env var)
+    
+    Returns:
+        dict with response from Facebook Graph API
+    """
+    if not access_token:
+        access_token = FACEBOOK_PAGE_ACCESS_TOKEN
+    
+    if not access_token:
+        raise ValueError(
+            "Facebook Page Access Token not found. "
+            "Set FACEBOOK_PAGE_ACCESS_TOKEN in .env file."
+        )
+    
+    if not INSTAGRAM_BUSINESS_ACCOUNT_ID:
+        raise ValueError(
+            "Instagram Business Account ID not found. "
+            "Set INSTAGRAM_BUSINESS_ACCOUNT_ID in .env file."
+        )
+    
+    # Facebook Graph API endpoint for replying to Instagram comments
+    # POST /<IG_ID>/mentions
+    url = f"https://graph.instagram.com/v18.0/{INSTAGRAM_BUSINESS_ACCOUNT_ID}/mentions"
+    
+    # Request payload
+    payload = {
+        "comment_id": comment_id,
+        "message": reply_text,
+        "access_token": access_token,
+    }
+    
+    try:
+        response = httpx.post(url, data=payload, timeout=10.0)
+        response.raise_for_status()
+        result = response.json()
+        logger.info(f"Instagram comment reply sent successfully: {result}")
+        return {"data": result, "successful": True, "error": None}
+    except httpx.HTTPStatusError as e:
+        error_data = e.response.json() if e.response else {}
+        error_message = error_data.get("error", {}).get("message", str(error_data))
+        error_code = error_data.get("error", {}).get("code", "unknown")
+        
+        logger.error(f"Facebook Graph API error: {e.response.status_code} - {error_message}")
+        
+        return {"data": {}, "successful": False, "error": error_message}
+    except Exception as e:
+        logger.error(f"Failed to reply to Instagram comment: {e}")
+        return {"data": {}, "successful": False, "error": str(e)}
+
+
 @app.get("/instagram/webhook")
 async def instagram_webhook_verify(
     hub_mode: str = Query(..., alias="hub.mode"),
@@ -238,6 +323,21 @@ async def instagram_webhook(request: Request):
 
     logger.info("Received Instagram webhook payload: %s", json.dumps(payload, indent=2))
 
+    # Return 200 OK immediately and process in background
+    import asyncio
+    
+    # Check for comment events - Instagram comment webhooks come with object: "instagram" and field: "comments"
+    if payload.get("object") == "instagram":
+        # Check if it's a comment event
+        entries = payload.get("entry", [])
+        for entry in entries:
+            changes = entry.get("changes", [])
+            for change in changes:
+                if change.get("field") == "comments":
+                    # It's a comment event, process it
+                    asyncio.create_task(handle_instagram_comment_webhook(payload))
+                    return JSONResponse({"ok": True})
+    
     # Instagram sends events in a specific format
     # Instagram webhook format might be different, need to check actual payload structure
     # For now, handling common Instagram webhook formats
@@ -432,6 +532,73 @@ async def instagram_webhook(request: Request):
                         logger.error("Error type: %s, Error details: %s", type(send_error).__name__, str(send_error))
 
     return JSONResponse({"ok": True})
+
+
+async def handle_instagram_comment_webhook(payload: dict[str, Any]) -> None:
+    """
+    Handle Instagram comment webhook events.
+    Processes comments in background and replies automatically.
+    """
+    entries = payload.get("entry", [])
+    for entry in entries:
+        instagram_account_id = entry.get("id")  # Instagram Business Account ID
+        if not instagram_account_id:
+            logger.warning("Entry missing Instagram account ID: %s", entry)
+            continue
+
+        # Handle comment events
+        changes = entry.get("changes", [])
+        for change in changes:
+            field = change.get("field")
+            value = change.get("value", {})
+            
+            # Check if it's a comment event
+            if field == "comments":
+                comment_data = value.get("comment", {})
+                comment_id = comment_data.get("id")
+                comment_text = comment_data.get("text", "")
+                media_id = value.get("media", {}).get("id")
+                
+                if not comment_id:
+                    logger.warning("Comment event missing comment ID: %s", change)
+                    continue
+                
+                # Skip if already processed
+                if _is_duplicate_comment(comment_id):
+                    logger.info("Duplicate comment %s detected; ignoring", comment_id)
+                    continue
+                
+                logger.info(
+                    "Received Instagram comment: id=%s, text='%s', media_id=%s",
+                    comment_id,
+                    comment_text[:100],  # Log first 100 chars
+                    media_id,
+                )
+                
+                # Process comment reply in background
+                import asyncio
+                asyncio.create_task(process_instagram_comment(comment_id))
+
+
+async def process_instagram_comment(comment_id: str) -> None:
+    """
+    Process an Instagram comment and reply automatically.
+    """
+    try:
+        logger.info(f"Processing comment reply for comment_id: {comment_id}")
+        reply_text = "thank you for commenting"
+        
+        response = reply_to_instagram_comment(
+            comment_id=comment_id,
+            reply_text=reply_text,
+        )
+        
+        if response.get("successful"):
+            logger.info(f"✅ Successfully replied to comment {comment_id}")
+        else:
+            logger.error(f"❌ Failed to reply to comment {comment_id}: {response.get('error')}")
+    except Exception as e:
+        logger.exception(f"Error processing Instagram comment {comment_id}: {e}")
 
 
 if __name__ == "__main__":

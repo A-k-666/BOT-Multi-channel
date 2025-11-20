@@ -850,6 +850,7 @@ async def handle_instagram_comment_webhook(payload: dict[str, Any]) -> None:
 async def process_instagram_comment(
     comment_id: str,
     instagram_business_account_id: str,
+    media_id: str | None = None,
     org_id: str | None = None,
     connected_account_id: str | None = None,
     account_config: dict[str, Any] | None = None,

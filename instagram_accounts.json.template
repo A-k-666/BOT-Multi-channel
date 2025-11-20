@@ -1,0 +1,15 @@
+{
+  "YOUR_INSTAGRAM_BUSINESS_ACCOUNT_ID": {
+    "org_id": "your_composio_org_id",
+    "connected_account_id": "your_composio_connected_account_id",
+    "facebook_page_access_token": "your_facebook_page_access_token",
+    "instagram_business_account_id": "YOUR_INSTAGRAM_BUSINESS_ACCOUNT_ID"
+  },
+  "ANOTHER_INSTAGRAM_BUSINESS_ACCOUNT_ID": {
+    "org_id": "another_composio_org_id",
+    "connected_account_id": "another_composio_connected_account_id",
+    "facebook_page_access_token": "another_facebook_page_access_token",
+    "instagram_business_account_id": "ANOTHER_INSTAGRAM_BUSINESS_ACCOUNT_ID"
+  }
+}
+

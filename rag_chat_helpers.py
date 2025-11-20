@@ -18,7 +18,7 @@ RAG_CHAT_API_URL = os.getenv(
 async def call_rag_chat_api(
     message: str,
     conversation_id: str | None = None,
-    timeout: float = 60.0,
+    timeout: float = 25.0,
 ) -> dict[str, Any]:
     """
     Call the RAG Super Agent chat API with a user message.
@@ -35,19 +35,27 @@ async def call_rag_chat_api(
     if conversation_id:
         payload["conversation_id"] = conversation_id
     
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(
-            RAG_CHAT_API_URL,
-            json=payload,
-            headers={"accept": "application/json", "Content-Type": "application/json"},
-        )
-        response.raise_for_status()
-        return response.json()
+    try:
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            response = await client.post(
+                RAG_CHAT_API_URL,
+                json=payload,
+                headers={"accept": "application/json", "Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.TimeoutException:
+        raise TimeoutError(f"RAG chat API request timed out after {timeout} seconds")
+    except httpx.HTTPStatusError as e:
+        raise Exception(f"RAG chat API returned error {e.response.status_code}: {e.response.text}")
+    except Exception as e:
+        raise Exception(f"Failed to call RAG chat API: {str(e)}")
 
 
 async def get_rag_chat_response(
     message: str,
     conversation_id: str | None = None,
+    timeout: float = 25.0,
 ) -> str:
     """
     Get a text response from the RAG Super Agent chat API.
@@ -55,12 +63,18 @@ async def get_rag_chat_response(
     Args:
         message: The user's message
         conversation_id: Optional conversation ID for context tracking
+        timeout: Request timeout in seconds (default 25s to avoid server timeout)
         
     Returns:
         The response message text
     """
-    result = await call_rag_chat_api(message, conversation_id)
-    return result.get("message", "Sorry, I couldn't get a response.")
+    try:
+        result = await call_rag_chat_api(message, conversation_id, timeout=timeout)
+        return result.get("message", "Sorry, I couldn't get a response.")
+    except TimeoutError:
+        return "Sorry, the request took too long. Please try again with a shorter question."
+    except Exception as e:
+        return f"Sorry, I encountered an error: {str(e)}"
 
 
 __all__ = [

@@ -329,11 +329,66 @@ async def facebook_webhook_verify(
         raise HTTPException(status_code=403, detail="Verification failed")
 
 
+async def process_facebook_message(
+    page_id: str,
+    sender_id: str,
+    message_text: str,
+    message_id: str | None,
+) -> None:
+    """Process a Facebook message in the background."""
+    try:
+        # Resolve page to Composio account
+        try:
+            org_id, connected_account_id = resolve_page(page_id)
+        except HTTPException as exc:
+            logger.error("Page lookup failed for %s: %s", page_id, exc.detail)
+            return
+
+        # Process message with RAG Super Agent chat API
+        try:
+            logger.info("Dispatching to RAG chat API with text: %s", message_text)
+            reply = await get_rag_chat_response(message_text)
+        except Exception as agent_error:
+            logger.exception("RAG chat API invocation failed: %s", agent_error)
+            reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
+
+        # Send reply via Composio (split into chunks if too long)
+        try:
+            message_chunks = split_message_for_social_media(reply)
+            logger.info(f"Facebook message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
+            
+            for i, chunk in enumerate(message_chunks):
+                logger.info(f"Sending Facebook chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
+                response = send_facebook_message(
+                    org_id=org_id,
+                    connected_account_id=connected_account_id,
+                    page_id=page_id,
+                    recipient_id=sender_id,
+                    text=chunk,
+                )
+                if not response.get("successful"):
+                    logger.error(f"Failed to send Facebook chunk {i+1}: {response.get('error')}")
+                else:
+                    logger.info(f"✅ Successfully sent Facebook chunk {i+1}/{len(message_chunks)}")
+                
+                # Small delay between chunks to avoid rate limiting
+                if i < len(message_chunks) - 1:
+                    import asyncio
+                    await asyncio.sleep(0.5)
+            
+            logger.info("✅ Successfully sent all Facebook response chunks")
+        except Exception as send_error:
+            logger.exception("Failed to send message via Composio: %s", send_error)
+    except Exception as e:
+        logger.exception("Error processing Facebook message: %s", e)
+
+
 @app.post("/facebook/webhook")
 async def facebook_webhook(request: Request):
     """
     Facebook webhook endpoint for receiving events.
     Facebook sends POST requests with message events.
+    Returns 200 OK immediately and processes messages in background.
     """
     logger.info("=== POST /facebook/webhook called ===")
     logger.info("Request headers: %s", dict(request.headers))
@@ -351,7 +406,10 @@ async def facebook_webhook(request: Request):
 
     # Handle Instagram events (object: "instagram")
     if payload.get("object") == "instagram":
-        return await handle_instagram_webhook(payload)
+        # Process in background and return immediately
+        import asyncio
+        asyncio.create_task(handle_instagram_webhook(payload))
+        return JSONResponse({"ok": True})
     
     # Handle Facebook page events (object: "page")
     if payload.get("object") != "page":
@@ -398,56 +456,24 @@ async def facebook_webhook(request: Request):
                 message_text,
             )
 
-            # Resolve page to Composio account
-            try:
-                org_id, connected_account_id = resolve_page(page_id)
-            except HTTPException as exc:
-                logger.error("Page lookup failed for %s: %s", page_id, exc.detail)
-                continue
+            # Process message in background (return 200 OK immediately)
+            import asyncio
+            asyncio.create_task(process_facebook_message(
+                page_id=page_id,
+                sender_id=sender_id,
+                message_text=message_text,
+                message_id=message_id,
+            ))
 
-            # Process message with RAG Super Agent chat API
-            try:
-                logger.info("Dispatching to RAG chat API with text: %s", message_text)
-                reply = await get_rag_chat_response(message_text)
-            except Exception as agent_error:
-                logger.exception("RAG chat API invocation failed: %s", agent_error)
-                reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
-
-            # Send reply via Composio (split into chunks if too long)
-            try:
-                message_chunks = split_message_for_social_media(reply)
-                logger.info(f"Facebook message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
-                
-                for i, chunk in enumerate(message_chunks):
-                    logger.info(f"Sending Facebook chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
-                    response = send_facebook_message(
-                        org_id=org_id,
-                        connected_account_id=connected_account_id,
-                        page_id=page_id,
-                        recipient_id=sender_id,
-                        text=chunk,
-                    )
-                    if not response.get("successful"):
-                        logger.error(f"Failed to send Facebook chunk {i+1}: {response.get('error')}")
-                    else:
-                        logger.info(f"✅ Successfully sent Facebook chunk {i+1}/{len(message_chunks)}")
-                    
-                    # Small delay between chunks to avoid rate limiting
-                    if i < len(message_chunks) - 1:
-                        import asyncio
-                        await asyncio.sleep(0.5)
-                
-                logger.info("✅ Successfully sent all Facebook response chunks")
-            except Exception as send_error:
-                logger.exception("Failed to send message via Composio: %s", send_error)
-
+    # Return 200 OK immediately to Facebook
     return JSONResponse({"ok": True})
 
 
-async def handle_instagram_webhook(payload: dict[str, Any]) -> JSONResponse:
+async def handle_instagram_webhook(payload: dict[str, Any]) -> None:
     """
     Handle Instagram webhook events.
     Instagram messages come through Facebook webhook with object: "instagram".
+    Processes messages in background.
     """
     entries = payload.get("entry", [])
     for entry in entries:
@@ -489,59 +515,14 @@ async def handle_instagram_webhook(payload: dict[str, Any]) -> JSONResponse:
                 message_text,
             )
 
-            # Use same Facebook connection for Instagram (since Instagram is linked to Facebook page)
-            try:
-                org_id, connected_account_id = resolve_page(instagram_account_id)
-            except HTTPException:
-                # If Instagram account ID not in mapping, use env vars (single page setup)
-                if FACEBOOK_ORG_ID and FACEBOOK_CONNECTED_ACCOUNT_ID:
-                    logger.info("Using Facebook connection for Instagram (linked accounts)")
-                    org_id = FACEBOOK_ORG_ID
-                    connected_account_id = FACEBOOK_CONNECTED_ACCOUNT_ID
-                else:
-                    logger.error(
-                        "Facebook env vars not set. Set FACEBOOK_ORG_ID and FACEBOOK_CONNECTED_ACCOUNT_ID."
-                    )
-                    continue
-
-            # Process message with RAG Super Agent chat API
-            try:
-                logger.info("Dispatching to RAG chat API with text: %s", message_text)
-                reply = await get_rag_chat_response(message_text)
-            except Exception as agent_error:
-                logger.exception("RAG chat API invocation failed: %s", agent_error)
-                reply = f"{DEFAULT_RESPONSE_TEXT}\n\n(Error: {agent_error})"
-
-            # Send reply via Facebook Graph API (Instagram is linked to Facebook page)
-            # Split into chunks if message is too long
-            try:
-                message_chunks = split_message_for_social_media(reply)
-                logger.info(f"Instagram message split into {len(message_chunks)} chunks (total length: {len(reply)} chars)")
-                
-                for i, chunk in enumerate(message_chunks):
-                    logger.info(f"Sending Instagram chunk {i+1}/{len(message_chunks)} ({len(chunk)} chars)")
-                    response = send_instagram_message(
-                        org_id=org_id,
-                        connected_account_id=connected_account_id,
-                        instagram_account_id=instagram_account_id,
-                        recipient_id=sender_id,
-                        text=chunk,
-                    )
-                    if not response.get("successful"):
-                        logger.error(f"Failed to send Instagram chunk {i+1}: {response.get('error')}")
-                    else:
-                        logger.info(f"✅ Successfully sent Instagram chunk {i+1}/{len(message_chunks)}")
-                    
-                    # Small delay between chunks to avoid rate limiting
-                    if i < len(message_chunks) - 1:
-                        import asyncio
-                        await asyncio.sleep(0.5)
-                
-                logger.info("✅ Successfully sent all Instagram response chunks")
-            except Exception as send_error:
-                logger.exception("Failed to send Instagram message: %s", send_error)
-
-    return JSONResponse({"ok": True})
+            # Process message in background
+            import asyncio
+            asyncio.create_task(process_instagram_message(
+                instagram_account_id=instagram_account_id,
+                sender_id=sender_id,
+                message_text=message_text,
+                message_id=message_id,
+            ))
 
 
 if __name__ == "__main__":

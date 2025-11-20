@@ -25,7 +25,7 @@ logger.info("Instagram app module loaded")
 
 INSTAGRAM_VERIFY_TOKEN = os.getenv("INSTAGRAM_VERIFY_TOKEN", "")
 
-# Single account setup - direct from environment variables
+# Single account setup - direct from environment variables (fallback)
 INSTAGRAM_ORG_ID = os.getenv("INSTAGRAM_ORG_ID") or os.getenv("COMPOSIO_USER_ID", "")
 INSTAGRAM_CONNECTED_ACCOUNT_ID = os.getenv("INSTAGRAM_CONNECTED_ACCOUNT_ID", "")
 
@@ -34,6 +34,9 @@ FACEBOOK_PAGE_ACCESS_TOKEN = os.getenv("FACEBOOK_PAGE_ACCESS_TOKEN", "")
 
 # Instagram Business Account ID (fallback to env var if not in Composio)
 INSTAGRAM_BUSINESS_ACCOUNT_ID = os.getenv("INSTAGRAM_BUSINESS_ACCOUNT_ID", "")
+
+# Multi-account setup - JSON file for account mappings
+INSTAGRAM_ACCOUNTS_PATH = Path("instagram_accounts.json")
 
 _processed_message_ids: deque[str] = deque()
 _processed_message_index: set[str] = set()
@@ -186,10 +189,68 @@ def send_instagram_message(
         raise
 
 
+def load_instagram_account_mapping() -> dict[str, Any]:
+    """
+    Load Instagram Business Account ID to Composio account mapping from JSON file.
+    Returns empty dict if file doesn't exist.
+    """
+    if not INSTAGRAM_ACCOUNTS_PATH.exists():
+        return {}
+    try:
+        with INSTAGRAM_ACCOUNTS_PATH.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, Exception) as e:
+        logger.error("Failed to load instagram_accounts.json: %s", e)
+        return {}
+
+
+def get_composio_account_for_instagram(instagram_business_account_id: str) -> tuple[str, str, dict[str, Any]]:
+    """
+    Get Composio org_id and connected_account_id for a specific Instagram Business Account ID.
+    First checks JSON mapping (multi-account), then falls back to env vars (single account).
+    
+    Returns:
+        tuple: (org_id, connected_account_id, account_config)
+        account_config contains: facebook_page_access_token, instagram_business_account_id, etc.
+    """
+    # Load account mappings
+    account_map = load_instagram_account_mapping()
+    
+    # Check JSON mapping first (multi-account setup)
+    if account_map and instagram_business_account_id in account_map:
+        entry = account_map[instagram_business_account_id]
+        org_id = entry.get("org_id")
+        connected_account_id = entry.get("connected_account_id")
+        
+        if org_id and connected_account_id:
+            logger.info(f"Found account mapping for Instagram ID {instagram_business_account_id}")
+            return org_id, connected_account_id, entry
+    
+    # Fallback to environment variables (single account setup)
+    if INSTAGRAM_ORG_ID and INSTAGRAM_CONNECTED_ACCOUNT_ID:
+        logger.info("Using environment variables for single account setup")
+        config = {
+            "facebook_page_access_token": FACEBOOK_PAGE_ACCESS_TOKEN,
+            "instagram_business_account_id": INSTAGRAM_BUSINESS_ACCOUNT_ID or instagram_business_account_id,
+        }
+        return INSTAGRAM_ORG_ID, INSTAGRAM_CONNECTED_ACCOUNT_ID, config
+    
+    # If neither available, raise error
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"Unknown Instagram Business Account ID {instagram_business_account_id}. "
+            "Either add it to instagram_accounts.json or set INSTAGRAM_ORG_ID and "
+            "INSTAGRAM_CONNECTED_ACCOUNT_ID env vars."
+        ),
+    )
+
+
 def get_composio_account() -> tuple[str, str]:
     """
     Get Composio org_id and connected_account_id from environment variables.
     Single account setup - no JSON needed.
+    (Kept for backward compatibility)
     """
     if INSTAGRAM_ORG_ID and INSTAGRAM_CONNECTED_ACCOUNT_ID:
         return INSTAGRAM_ORG_ID, INSTAGRAM_CONNECTED_ACCOUNT_ID
@@ -206,12 +267,20 @@ def get_composio_account() -> tuple[str, str]:
 def get_instagram_access_token_from_composio(
     org_id: str | None = None,
     connected_account_id: str | None = None,
+    account_config: dict[str, Any] | None = None,
 ) -> str:
     """
-    Get Facebook Page Access Token from Composio connected account.
+    Get Facebook Page Access Token from Composio connected account or account config.
     Falls back to environment variable if not found in Composio.
     """
-    # First try to get from Composio connected account
+    # First check account_config (from JSON mapping)
+    if account_config and account_config.get("facebook_page_access_token"):
+        token = account_config.get("facebook_page_access_token")
+        if token:
+            logger.info("✅ Using access token from account config (JSON mapping)")
+            return str(token)
+    
+    # Then try to get from Composio connected account
     try:
         resolved_org_id = org_id or INSTAGRAM_ORG_ID
         resolved_account_id = connected_account_id or INSTAGRAM_CONNECTED_ACCOUNT_ID
@@ -297,12 +366,20 @@ def get_instagram_access_token_from_composio(
 def get_instagram_business_account_id_from_composio(
     org_id: str | None = None,
     connected_account_id: str | None = None,
+    account_config: dict[str, Any] | None = None,
 ) -> str:
     """
-    Get Instagram Business Account ID from Composio connected account.
+    Get Instagram Business Account ID from Composio connected account or account config.
     Falls back to environment variable if not found in Composio.
     """
-    # First try to get from Composio connected account
+    # First check account_config (from JSON mapping)
+    if account_config and account_config.get("instagram_business_account_id"):
+        ig_id = account_config.get("instagram_business_account_id")
+        if ig_id:
+            logger.info(f"✅ Using Instagram Business Account ID from account config: {ig_id}")
+            return str(ig_id)
+    
+    # Then try to get from Composio connected account
     try:
         resolved_org_id = org_id or INSTAGRAM_ORG_ID
         resolved_account_id = connected_account_id or INSTAGRAM_CONNECTED_ACCOUNT_ID
@@ -403,6 +480,7 @@ def reply_to_instagram_comment(
     instagram_account_id: str | None = None,
     org_id: str | None = None,
     connected_account_id: str | None = None,
+    account_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
     Reply to an Instagram comment using Facebook Graph API.
@@ -420,18 +498,18 @@ def reply_to_instagram_comment(
     Returns:
         dict with response from Facebook Graph API
     """
-    # Get access token from Composio if not provided
+    # Get access token from Composio/account_config if not provided
     if not access_token:
         try:
-            access_token = get_instagram_access_token_from_composio(org_id, connected_account_id)
+            access_token = get_instagram_access_token_from_composio(org_id, connected_account_id, account_config)
         except Exception as e:
             logger.error(f"Failed to get access token: {e}")
             raise ValueError(f"Facebook Page Access Token not found: {e}")
     
-    # Get Instagram Business Account ID from Composio if not provided
+    # Get Instagram Business Account ID from Composio/account_config if not provided
     if not instagram_account_id:
         try:
-            instagram_account_id = get_instagram_business_account_id_from_composio(org_id, connected_account_id)
+            instagram_account_id = get_instagram_business_account_id_from_composio(org_id, connected_account_id, account_config)
         except Exception as e:
             logger.error(f"Failed to get Instagram Business Account ID: {e}")
             raise ValueError(f"Instagram Business Account ID not found: {e}")
@@ -761,50 +839,48 @@ async def handle_instagram_comment_webhook(payload: dict[str, Any]) -> None:
                     continue
                 
                 logger.info(
-                    "Received Instagram comment: id=%s, text='%s', media_id=%s",
+                    "Received Instagram comment: id=%s, text='%s', media_id=%s, IG Account: %s",
                     comment_id,
                     comment_text[:100],  # Log first 100 chars
                     media_id,
+                    instagram_account_id,
                 )
                 
-                # Get Composio account details
-                try:
-                    org_id, connected_account_id = get_composio_account()
-                except Exception as e:
-                    logger.error(f"Failed to get Composio account: {e}")
-                    continue
-                
-                # Process comment reply in background
+                # Process comment reply in background (account routing happens inside)
                 import asyncio
                 asyncio.create_task(process_instagram_comment(
                     comment_id=comment_id,
-                    org_id=org_id,
-                    connected_account_id=connected_account_id,
+                    instagram_business_account_id=instagram_account_id,
                 ))
 
 
 async def process_instagram_comment(
     comment_id: str,
+    instagram_business_account_id: str,
     org_id: str | None = None,
     connected_account_id: str | None = None,
+    account_config: dict[str, Any] | None = None,
 ) -> None:
     """
     Process an Instagram comment and reply automatically.
-    Fetches access token and account ID from Composio if not provided.
+    Uses account mapping to get correct account details.
     """
     try:
-        logger.info(f"Processing comment reply for comment_id: {comment_id}")
+        logger.info(f"Processing comment reply for comment_id: {comment_id}, IG Account: {instagram_business_account_id}")
         reply_text = "thank you for commenting"
         
-        # Get org_id and connected_account_id if not provided
-        if not org_id or not connected_account_id:
-            org_id, connected_account_id = get_composio_account()
+        # Get account details from mapping if not provided
+        if not org_id or not connected_account_id or not account_config:
+            org_id, connected_account_id, account_config = get_composio_account_for_instagram(
+                instagram_business_account_id
+            )
         
         response = reply_to_instagram_comment(
             comment_id=comment_id,
             reply_text=reply_text,
             org_id=org_id,
             connected_account_id=connected_account_id,
+            account_config=account_config,
         )
         
         if response.get("successful"):

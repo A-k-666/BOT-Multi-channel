@@ -474,81 +474,53 @@ def _is_duplicate_comment(comment_id: str) -> bool:
 
 
 def reply_to_instagram_comment(
+    *,
+    org_id: str,
+    connected_account_id: str,
     comment_id: str,
     reply_text: str = "thank you for commenting",
-    access_token: str | None = None,
-    instagram_account_id: str | None = None,
-    org_id: str | None = None,
-    connected_account_id: str | None = None,
-    account_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """
-    Reply to an Instagram comment using Facebook Graph API.
-    
-    Uses POST /<IG_ID>/mentions endpoint to reply to comments.
+    Reply to an Instagram comment using Composio's INSTAGRAM_REPLY_TO_COMMENT tool.
+    Same approach as DM messages - uses Composio to handle everything.
     
     Args:
+        org_id: Composio org_id
+        connected_account_id: Composio connected_account_id
         comment_id: The Instagram comment ID to reply to
         reply_text: The reply message text (default: "thank you for commenting")
-        access_token: Facebook Page Access Token (if not provided, fetches from Composio or env var)
-        instagram_account_id: Instagram Business Account ID (if not provided, fetches from Composio or env var)
-        org_id: Composio org_id (optional, for fetching from Composio)
-        connected_account_id: Composio connected_account_id (optional, for fetching from Composio)
     
     Returns:
-        dict with response from Facebook Graph API
+        dict with response from Composio
     """
-    # Get access token from Composio/account_config if not provided
-    if not access_token:
-        try:
-            access_token = get_instagram_access_token_from_composio(org_id, connected_account_id, account_config)
-        except Exception as e:
-            logger.error(f"Failed to get access token: {e}")
-            raise ValueError(f"Facebook Page Access Token not found: {e}")
-    
-    # Get Instagram Business Account ID from account_config or use provided one
-    if not instagram_account_id:
-        # First check account_config (from JSON mapping)
-        if account_config and account_config.get("instagram_business_account_id"):
-            instagram_account_id = account_config.get("instagram_business_account_id")
-            logger.info(f"✅ Using Instagram Business Account ID from account config: {instagram_account_id}")
-        else:
-            # Try to get from Composio
-            try:
-                instagram_account_id = get_instagram_business_account_id_from_composio(org_id, connected_account_id, account_config)
-            except Exception as e:
-                logger.warning(f"Failed to get Instagram Business Account ID from Composio: {e}")
-                # If not found, this is a critical error - we need the ID to reply
-                raise ValueError(f"Instagram Business Account ID not found. Please add it to instagram_accounts.json or set in account config.")
-    
-    # Facebook Graph API endpoint for replying to Instagram comments
-    # POST /<IG_ID>/mentions
-    # Use graph.facebook.com (not graph.instagram.com) for mentions endpoint
-    url = f"https://graph.facebook.com/v18.0/{instagram_account_id}/mentions"
-    
-    # Request payload - Instagram mentions API format
-    payload = {
-        "comment_id": comment_id,
-        "message": reply_text,
-        "access_token": access_token,
+    arguments: dict[str, Any] = {
+        "comment_id": str(comment_id),
+        "message": str(reply_text),
     }
     
+    logger.info(
+        f"Executing INSTAGRAM_REPLY_TO_COMMENT with args: {arguments}, "
+        f"org_id={org_id}, connected_account_id={connected_account_id}"
+    )
+    
     try:
-        response = httpx.post(url, data=payload, timeout=10.0)
-        response.raise_for_status()
-        result = response.json()
-        logger.info(f"Instagram comment reply sent successfully: {result}")
-        return {"data": result, "successful": True, "error": None}
-    except httpx.HTTPStatusError as e:
-        error_data = e.response.json() if e.response else {}
-        error_message = error_data.get("error", {}).get("message", str(error_data))
-        error_code = error_data.get("error", {}).get("code", "unknown")
-        
-        logger.error(f"Facebook Graph API error: {e.response.status_code} - {error_message}")
-        
-        return {"data": {}, "successful": False, "error": error_message}
+        result = composio_client.tools.execute(
+            slug="INSTAGRAM_REPLY_TO_COMMENT",
+            arguments=arguments,
+            user_id=org_id,
+            connected_account_id=connected_account_id,
+            version="latest",
+            dangerously_skip_version_check=True,
+        )
+        logger.info(f"Composio tool execution result: {json.dumps(result, indent=2)}")
+        return result
     except Exception as e:
-        logger.error(f"Failed to reply to Instagram comment: {e}")
+        logger.error(f"Exception during INSTAGRAM_REPLY_TO_COMMENT execution: {type(e).__name__}: {e}")
+        # Try to get more details from the exception
+        if hasattr(e, 'response'):
+            logger.error(f"Exception response: {e.response}")
+        if hasattr(e, 'body'):
+            logger.error(f"Exception body: {e.body}")
         return {"data": {}, "successful": False, "error": str(e)}
 
 
@@ -888,12 +860,10 @@ async def process_instagram_comment(
             account_config["instagram_business_account_id"] = instagram_business_account_id
         
         response = reply_to_instagram_comment(
-            comment_id=comment_id,
-            reply_text=reply_text,
             org_id=org_id,
             connected_account_id=connected_account_id,
-            account_config=account_config,
-            instagram_account_id=instagram_business_account_id,  # Pass webhook ID directly
+            comment_id=comment_id,
+            reply_text=reply_text,
         )
         
         if response.get("successful"):

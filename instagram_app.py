@@ -479,6 +479,8 @@ def reply_to_instagram_comment(
     connected_account_id: str,
     comment_id: str,
     reply_text: str = "thank you for commenting",
+    media_id: str | None = None,
+    instagram_business_account_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Reply to an Instagram comment using Composio's INSTAGRAM_REPLY_TO_COMMENT tool.
@@ -489,6 +491,8 @@ def reply_to_instagram_comment(
         connected_account_id: Composio connected_account_id
         comment_id: The Instagram comment ID to reply to
         reply_text: The reply message text (default: "thank you for commenting")
+        media_id: Optional media ID (if tool requires it)
+        instagram_business_account_id: Optional Instagram Business Account ID (if tool requires it)
     
     Returns:
         dict with response from Composio
@@ -497,6 +501,14 @@ def reply_to_instagram_comment(
         "ig_comment_id": str(comment_id),  # Composio expects 'ig_comment_id', not 'comment_id'
         "message": str(reply_text),
     }
+    
+    # Add media_id if provided (some tools might need it)
+    if media_id:
+        arguments["media_id"] = str(media_id)
+    
+    # Add Instagram Business Account ID if provided (some tools might need it)
+    if instagram_business_account_id:
+        arguments["instagram_business_account_id"] = str(instagram_business_account_id)
     
     logger.info(
         f"Executing INSTAGRAM_REPLY_TO_COMMENT with args: {arguments}, "
@@ -831,6 +843,7 @@ async def handle_instagram_comment_webhook(payload: dict[str, Any]) -> None:
                 asyncio.create_task(process_instagram_comment(
                     comment_id=comment_id,
                     instagram_business_account_id=instagram_account_id,
+                    media_id=media_id,
                 ))
 
 
@@ -864,6 +877,8 @@ async def process_instagram_comment(
             connected_account_id=connected_account_id,
             comment_id=comment_id,
             reply_text=reply_text,
+            media_id=media_id,
+            instagram_business_account_id=instagram_business_account_id,
         )
         
         if response.get("successful"):

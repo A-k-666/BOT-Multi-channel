@@ -30,8 +30,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--auth-config-id",
-        default="ac_KR6rNOI6h2ge",
-        help="Instagram Auth Config ID (default: ac_KR6rNOI6h2ge)",
+        default="ac_Mx2tzfHQLGKj",
+        help="Instagram Auth Config ID (default: ac_Mx2tzfHQLGKj)",
     )
     return parser.parse_args()
 
@@ -86,12 +86,11 @@ def main() -> None:
     user_ids = resolve_user_ids(args)
 
     # Fetch all Instagram accounts
+    # Try both old and new auth config IDs to get all accounts
     list_kwargs = {
         "toolkit_slugs": ["INSTAGRAM"],
+        "auth_config_ids": ["ac_Mx2tzfHQLGKj", "ac_KR6rNOI6h2ge"],  # New and old auth configs
     }
-    # Try with auth_config_id if provided
-    if args.auth_config_id:
-        list_kwargs["auth_config_ids"] = [args.auth_config_id]
     if user_ids:
         list_kwargs["user_ids"] = user_ids
     

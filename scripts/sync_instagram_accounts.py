@@ -37,9 +37,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def resolve_user_ids(args: argparse.Namespace) -> list[str] | None:
-    raw = args.user_ids or os.getenv("COMPOSIO_USER_ID")
-    if raw:
-        return [uid.strip() for uid in raw.split(",") if uid.strip()]
+    # Only use user_ids if explicitly provided via --user-ids flag
+    # Don't auto-use COMPOSIO_USER_ID to allow fetching all accounts
+    if args.user_ids:
+        return [uid.strip() for uid in args.user_ids.split(",") if uid.strip()]
     return None
 
 
@@ -87,15 +88,20 @@ def main() -> None:
     # Fetch all Instagram accounts
     list_kwargs = {
         "toolkit_slugs": ["INSTAGRAM"],
-        "auth_config_ids": [args.auth_config_id],
     }
+    # Try with auth_config_id if provided
+    if args.auth_config_id:
+        list_kwargs["auth_config_ids"] = [args.auth_config_id]
     if user_ids:
         list_kwargs["user_ids"] = user_ids
     
     print(f"Fetching Instagram connected accounts...")
+    print(f"Filters: toolkit_slugs={list_kwargs.get('toolkit_slugs')}, auth_config_ids={list_kwargs.get('auth_config_ids')}, user_ids={list_kwargs.get('user_ids')}")
     accounts = client.connected_accounts.list(**list_kwargs)
+    print(f"Found {len(accounts.items)} total account(s)")
 
     mapping: dict[str, dict[str, str]] = {}
+    accounts_without_ig_id = []
     
     for account in accounts.items:
         # Only process ACTIVE accounts
@@ -111,11 +117,12 @@ def main() -> None:
         ig_business_account_id = get_instagram_business_account_id_from_account(account)
         
         if not ig_business_account_id:
-            print(f"[WARN] Account {connected_account_id} has no Instagram Business Account ID in metadata.")
-            print(f"       This account will be added but you'll need to manually add the Instagram Business Account ID.")
-            print(f"       The ID will be populated automatically when webhooks are received.")
-            # Use a placeholder or skip - actually, let's skip for now and let webhooks populate it
-            # Or we could use the connected_account_id as a temporary key
+            accounts_without_ig_id.append({
+                "org_id": org_id,
+                "connected_account_id": connected_account_id,
+            })
+            print(f"[INFO] Found connected account: {connected_account_id} (org: {org_id})")
+            print(f"       Instagram Business Account ID not in metadata - will be added when webhooks arrive")
             continue
         
         mapping[ig_business_account_id] = {
@@ -124,10 +131,13 @@ def main() -> None:
         }
         print(f"[OK] Found account: IG ID {ig_business_account_id} -> {connected_account_id}")
 
-    if not mapping:
-        print("[WARN] No active Instagram accounts found with Instagram Business Account IDs.")
-        print("       Accounts will be added automatically when webhooks are received.")
+    if not mapping and not accounts_without_ig_id:
+        print("[WARN] No active Instagram accounts found.")
         return
+    
+    if accounts_without_ig_id:
+        print(f"\n[INFO] Found {len(accounts_without_ig_id)} connected account(s) without Instagram Business Account ID in metadata.")
+        print("       These will be automatically added to JSON when webhooks are received.")
 
     # Load existing JSON and merge
     target = Path(args.output)

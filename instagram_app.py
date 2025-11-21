@@ -116,6 +116,7 @@ async def process_instagram_message(
             },
             user_id=org_id,
             connected_account_id=connected_account_id,
+            dangerously_skip_version_check=True,
         )
         
         if result.get("successful"):
@@ -150,6 +151,7 @@ async def process_instagram_comment(
             },
             user_id=org_id,
             connected_account_id=connected_account_id,
+            dangerously_skip_version_check=True,
         )
         
         if result.get("successful"):

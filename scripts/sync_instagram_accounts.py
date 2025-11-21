@@ -86,10 +86,10 @@ def main() -> None:
     user_ids = resolve_user_ids(args)
 
     # Fetch all Instagram accounts
-    # Try both old and new auth config IDs to get all accounts
+    # Use only the specified auth config ID
     list_kwargs = {
         "toolkit_slugs": ["INSTAGRAM"],
-        "auth_config_ids": ["ac_Mx2tzfHQLGKj", "ac_KR6rNOI6h2ge"],  # New and old auth configs
+        "auth_config_ids": [args.auth_config_id],
     }
     if user_ids:
         list_kwargs["user_ids"] = user_ids
@@ -116,27 +116,31 @@ def main() -> None:
         ig_business_account_id = get_instagram_business_account_id_from_account(account)
         
         if not ig_business_account_id:
-            accounts_without_ig_id.append({
+            # Add account with connected_account_id as temporary key
+            # When webhooks arrive with real Instagram Business Account ID, it will be updated
+            temp_key = f"TEMP_{connected_account_id}"
+            mapping[temp_key] = {
                 "org_id": org_id,
                 "connected_account_id": connected_account_id,
-            })
-            print(f"[INFO] Found connected account: {connected_account_id} (org: {org_id})")
-            print(f"       Instagram Business Account ID not in metadata - will be added when webhooks arrive")
-            continue
-        
-        mapping[ig_business_account_id] = {
-            "org_id": org_id,
-            "connected_account_id": connected_account_id,
-        }
-        print(f"[OK] Found account: IG ID {ig_business_account_id} -> {connected_account_id}")
+                "_note": "Temporary entry - will be updated when webhook arrives with Instagram Business Account ID",
+            }
+            accounts_without_ig_id.append(connected_account_id)
+            print(f"[INFO] Added account with temp key: {connected_account_id} (org: {org_id})")
+            print(f"       Will be updated with real Instagram Business Account ID when webhooks arrive")
+        else:
+            mapping[ig_business_account_id] = {
+                "org_id": org_id,
+                "connected_account_id": connected_account_id,
+            }
+            print(f"[OK] Found account: IG ID {ig_business_account_id} -> {connected_account_id}")
 
-    if not mapping and not accounts_without_ig_id:
+    if not mapping:
         print("[WARN] No active Instagram accounts found.")
         return
     
     if accounts_without_ig_id:
-        print(f"\n[INFO] Found {len(accounts_without_ig_id)} connected account(s) without Instagram Business Account ID in metadata.")
-        print("       These will be automatically added to JSON when webhooks are received.")
+        print(f"\n[INFO] Added {len(accounts_without_ig_id)} account(s) with temporary keys.")
+        print("       These will be updated with real Instagram Business Account IDs when webhooks arrive.")
 
     # Load existing JSON and merge
     target = Path(args.output)
@@ -150,13 +154,28 @@ def main() -> None:
     
     # Merge: existing entries take precedence (don't overwrite manually added entries)
     # But update org_id and connected_account_id if they changed
+    # Also, don't overwrite real Instagram Business Account IDs with temp keys
     for ig_id, account_data in mapping.items():
+        # Skip temp keys if a real entry already exists for this connected_account_id
+        if ig_id.startswith("TEMP_"):
+            connected_account_id = account_data["connected_account_id"]
+            # Check if this connected_account_id already exists in existing entries
+            already_exists = any(
+                entry.get("connected_account_id") == connected_account_id 
+                for entry in existing.values()
+            )
+            if already_exists:
+                print(f"[SKIP] Skipping temp key {ig_id} - connected_account_id {connected_account_id} already exists")
+                continue
+        
         if ig_id in existing:
             # Update org_id and connected_account_id if they exist in new data
-            existing[ig_id].update({
-                "org_id": account_data["org_id"],
-                "connected_account_id": account_data["connected_account_id"],
-            })
+            # But don't overwrite if existing entry has real Instagram Business Account ID
+            if not ig_id.startswith("TEMP_"):
+                existing[ig_id].update({
+                    "org_id": account_data["org_id"],
+                    "connected_account_id": account_data["connected_account_id"],
+                })
         else:
             existing[ig_id] = account_data
     
